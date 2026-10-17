@@ -115,10 +115,44 @@ video {
   border-radius: 12px;
 }
 
+.hint {
+  color: #6b6258;
+  font-size: 13px;
+}
+
+.duration {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #6b6258;
+  font-size: 14px;
+}
+
+.duration input {
+  width: 88px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #1c1915;
+  border-radius: 12px;
+  background: #fff;
+  color: #1c1915;
+  font: inherit;
+}
+
+.duration input:disabled {
+  opacity: 0.45;
+}
+
 .actions {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.record-actions {
+  padding-top: 4px;
+  border-top: 1px solid #e2d8c8;
 }
 
 button,
