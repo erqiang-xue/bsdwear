@@ -6,8 +6,11 @@ import {
   createContinuousRecorder,
   createTryOnSession,
   FRONT_CAMERA_TIP,
+  appendDanmaku,
   describeAutoStop,
+  describeInitStep,
   describeSessionEnd,
+  initStepForConnection,
   describeStartError,
   downloadBlob,
   parseMaxSeconds,
@@ -75,6 +78,14 @@ export default function App() {
   const [garmentUrl, setGarmentUrl] = useState('');
   const [readingUrl, setReadingUrl] = useState(false);
   const [clock, setClock] = useState({ banked: 0, elapsed: 0 });
+  const [danmaku, setDanmaku] = useState([]);
+  const [danmakuOn, setDanmakuOn] = useState(false);
+  const [danmakuFading, setDanmakuFading] = useState(false);
+  const initVisibleRef = useRef(false);
+  const initRunRef = useRef(0);
+  const latestInitRef = useRef('');
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
 
   function takeRecorder() {
     if (!takeRecorderRef.current) takeRecorderRef.current = createContinuousRecorder();
@@ -221,21 +232,78 @@ export default function App() {
     }
   }
 
+  function pushInit(step, detail) {
+    if (!initVisibleRef.current) return;
+    const text = describeInitStep(step, detail);
+    if (!text) return;
+    latestInitRef.current = text;
+    setDanmaku((items) => appendDanmaku(items, text));
+    if (phaseRef.current === 'starting') setStatus(text);
+  }
+
+  useEffect(() => {
+    if (phase !== 'starting') return undefined;
+    const id = setInterval(() => {
+      const text = latestInitRef.current;
+      if (!text || !initVisibleRef.current) return;
+      setDanmaku((items) => appendDanmaku(items, text));
+    }, 2600);
+    return () => clearInterval(id);
+  }, [phase]);
+
+  useEffect(() => {
+    if (phase === 'starting') {
+      setDanmakuOn(true);
+      setDanmakuFading(false);
+      return undefined;
+    }
+    if (!initVisibleRef.current) return undefined;
+    const run = initRunRef.current;
+    const hold = phase === 'live' ? 1100 : 180;
+    const fadeAt = window.setTimeout(() => {
+      if (initRunRef.current !== run) return;
+      setDanmakuFading(true);
+    }, hold);
+    const clearAt = window.setTimeout(() => {
+      if (initRunRef.current !== run) return;
+      initVisibleRef.current = false;
+      latestInitRef.current = '';
+      setDanmakuOn(false);
+      setDanmakuFading(false);
+      setDanmaku([]);
+    }, hold + 520);
+    return () => {
+      window.clearTimeout(fadeAt);
+      window.clearTimeout(clearAt);
+    };
+  }, [phase]);
+
   async function start() {
     if (startLock.current) return;
     startLock.current = true;
     autoStopRef.current = false;
     setError('');
+    phaseRef.current = 'starting';
+    initRunRef.current += 1;
+    initVisibleRef.current = true;
+    latestInitRef.current = '';
+    setDanmaku([]);
+    setDanmakuOn(true);
+    setDanmakuFading(false);
     setPhase('starting');
-    setStatus('正在连接试穿流…');
+    setStatus('正在连接试穿流');
     const maxDurationMs = parseMaxSeconds(maxSeconds) * 1000;
     try {
       const result = await sessionRef.current.start({
         maxDurationMs,
         onLocalStream: (stream) => attachStream(stream),
         onRemoteStream: (stream) => attachStream(stream, { remote: true }),
+        onInitStep: (step, detail) => pushInit(step, detail),
+        onQueuePosition: (queue) => pushInit('queue', { position: queue?.position }),
         onConnectionChange: (state) => {
-          if (CONNECTION_LABELS[state]) setStatus(CONNECTION_LABELS[state]);
+          const step = initStepForConnection(state);
+          if (step) pushInit(step);
+          else if (CONNECTION_LABELS[state]) setStatus(CONNECTION_LABELS[state]);
         },
         onError: (event) => {
           setError(event?.message || '试穿流连接出错。');
@@ -455,6 +523,19 @@ export default function App() {
       <main className="studio">
         <section className={`stage ${phase === 'replay' ? 'is-replay' : ''}`} aria-label="试穿预览">
           <video ref={videoRef} autoPlay playsInline muted />
+          {danmakuOn ? (
+            <div className={`danmaku ${danmakuFading ? 'is-fading' : ''}`} aria-hidden="true">
+              {danmaku.map((item) => (
+                <span
+                  key={item.id}
+                  className={`danmaku-line lane-${item.lane}`}
+                  style={{ animationDelay: `${item.delay}s` }}
+                >
+                  {item.text}
+                </span>
+              ))}
+            </div>
+          ) : null}
           {recording ? <p className="rec-pill">录制中</p> : null}
           {showEmpty ? (
             <div className="stage-empty">

@@ -9,8 +9,11 @@ import {
   paintRecordingFrame,
   createTryOnDecartClient,
   createTryOnSession,
+  appendDanmaku,
   describeAutoStop,
+  describeInitStep,
   describeStartError,
+  initStepForConnection,
   downloadBlob,
   fetchRealtimeApiKey,
   mediaStreamFromVideo,
@@ -83,6 +86,69 @@ test('fetchRealtimeApiKey explains a network failure in Chinese', async () => {
       }),
     /无法连接试穿服务/,
   );
+});
+
+test('init danmaku names the real connect phases in Chinese', () => {
+  assert.equal(describeInitStep('camera-ready'), '摄像头已就绪');
+  assert.equal(describeInitStep('camera-opening'), '正在打开摄像头');
+  assert.equal(describeInitStep('token'), '正在获取试穿令牌');
+  assert.equal(describeInitStep('connecting'), '正在连接试穿流');
+  assert.equal(describeInitStep('garment'), '正在换上上装');
+  assert.equal(describeInitStep('ready'), '试穿已就绪');
+  assert.equal(describeInitStep('model', { model: 'lucy-vton-latest' }), '加载模型 lucy-vton-latest');
+  assert.equal(describeInitStep('output', { width: 1280, height: 720 }), '输出 1280×720');
+  assert.equal(describeInitStep('queue', { position: 3 }), '排队第 3 位');
+  assert.equal(describeInitStep('nope'), '');
+  assert.equal(initStepForConnection('connecting'), 'channel');
+  assert.equal(initStepForConnection('generating'), 'generating');
+  assert.equal(initStepForConnection('idle'), '');
+});
+
+test('danmaku lines stagger a burst and ignore an immediate repeat', () => {
+  const first = appendDanmaku([], '正在获取试穿令牌', 1000);
+  const burst = appendDanmaku(first, '正在连接试穿流', 1020);
+  assert.equal(burst.length, 2);
+  assert.equal(burst[1].lane, (first[0].lane + 1) % 5);
+  assert.ok(burst[1].delay > 0);
+  assert.equal(appendDanmaku(burst, '正在连接试穿流', 1500), burst);
+  const again = appendDanmaku(burst, '正在连接试穿流', 3000);
+  assert.equal(again.length, 3);
+  assert.equal(again.at(-1).delay, 0);
+});
+
+test('start reports camera, model, token, and a waiting garment before ready', async () => {
+  const steps = [];
+  const session = createTryOnSession({
+    model: { name: 'lucy-vton-latest', width: 1280, height: 720, fps: 30 },
+    getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }),
+    createClient: () => ({
+      realtime: {
+        connect: async (_stream, options) => {
+          options.onConnectionChange?.('connecting');
+          options.onQueuePosition?.({ position: 2, queueSize: 4 });
+          return { set: async () => {}, disconnect() {}, on() {} };
+        },
+      },
+    }),
+  });
+
+  await session.applyGarment({ name: 'coat.png' });
+  await session.start({
+    onRemoteStream() {},
+    onInitStep: (step, detail) => steps.push([step, detail?.model ?? detail?.width ?? detail?.position ?? null]),
+  });
+
+  assert.deepEqual(steps, [
+    ['camera-opening', null],
+    ['camera-ready', null],
+    ['model', 'lucy-vton-latest'],
+    ['output', 1280],
+    ['token', null],
+    ['connecting', null],
+    ['garment', null],
+    ['ready', null],
+  ]);
+  session.stop();
 });
 
 test('createTryOnDecartClient asks the SDK for a token on each connect', async () => {

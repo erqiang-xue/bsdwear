@@ -208,6 +208,68 @@ export function describeStartError(error) {
   return '开启试穿流失败。';
 }
 
+export function describeInitStep(step, detail = {}) {
+  switch (step) {
+    case 'camera-ready':
+      return '摄像头已就绪';
+    case 'camera-opening':
+      return '正在打开摄像头';
+    case 'token':
+      return '正在获取试穿令牌';
+    case 'model':
+      return detail.model ? `加载模型 ${detail.model}` : '正在加载试穿模型';
+    case 'output':
+      return detail.width && detail.height ? `输出 ${detail.width}×${detail.height}` : '';
+    case 'connecting':
+      return '正在连接试穿流';
+    case 'channel':
+      return '正在建立视频通道';
+    case 'connected':
+      return '试穿通道已接通';
+    case 'generating':
+      return '正在生成试穿画面';
+    case 'garment':
+      return '正在换上上装';
+    case 'ready':
+      return '试穿已就绪';
+    case 'reconnecting':
+      return '正在重新连接试穿流';
+    case 'disconnected':
+      return '试穿流已断开';
+    case 'queue':
+      return Number.isFinite(detail.position) ? `排队第 ${detail.position} 位` : '正在排队等待算力';
+    default:
+      return '';
+  }
+}
+
+export function initStepForConnection(state) {
+  if (state === 'connecting') return 'channel';
+  if (state === 'connected') return 'connected';
+  if (state === 'generating') return 'generating';
+  if (state === 'reconnecting') return 'reconnecting';
+  if (state === 'disconnected') return 'disconnected';
+  return '';
+}
+
+export function appendDanmaku(items, text, now = Date.now()) {
+  if (typeof text !== 'string' || text.length === 0) return items;
+  const previous = items.findLast((item) => item.text === text);
+  if (previous && now - previous.at < 1400) return items;
+  const burst = items.filter((item) => now - item.at < 80).length;
+  const lane = ((items.at(-1)?.lane ?? -1) + 1) % 5;
+  return [
+    ...items,
+    {
+      id: `${now}-${items.length}-${text}`,
+      text,
+      lane,
+      at: now,
+      delay: burst * 0.4,
+    },
+  ].slice(-8);
+}
+
 export function describeSessionEnd(reason) {
   if (reason === 'insufficient_credits') return '试穿额度已用完，请到 platform.decart.ai 查看余额。';
   if (reason === 'moderation_violation') return '画面未通过内容审核，试穿已结束。';
@@ -555,6 +617,8 @@ export function createTryOnSession({
       onSessionEnded,
       onAutoStop,
       onBeforeAutoStop,
+      onInitStep,
+      onQueuePosition,
       maxDurationMs = DEFAULT_MAX_SESSION_MS,
     } = {}) {
       if (realtimeClient || starting) {
@@ -567,14 +631,22 @@ export function createTryOnSession({
       let stream = localStream;
       try {
         if (!stream) {
+          onInitStep?.('camera-opening');
           stream = await openCamera(getUserMedia, model);
           if (sessionId !== generation) {
             stopTracks(stream);
             return null;
           }
           localStream = stream;
+          onInitStep?.('camera-ready');
+        } else {
+          onInitStep?.('camera-ready');
         }
         onLocalStream?.(stream);
+        if (model?.name) onInitStep?.('model', { model: model.name });
+        if (model?.width && model?.height) onInitStep?.('output', { width: model.width, height: model.height });
+        onInitStep?.('token');
+        onInitStep?.('connecting');
 
         const client = createClient();
         const options = {
@@ -583,6 +655,7 @@ export function createTryOnSession({
           onRemoteStream,
         };
         if (onConnectionChange) options.onConnectionChange = onConnectionChange;
+        if (onQueuePosition) options.onQueuePosition = onQueuePosition;
 
         const rt = await client.realtime.connect(stream, options);
         if (sessionId !== generation) {
@@ -601,8 +674,12 @@ export function createTryOnSession({
         realtimeClient = rt;
         localStream = stream;
         armAutoStop(sessionId, rt, maxDurationMs, onBeforeAutoStop, onAutoStop);
-        if (garment) await enqueueGarment(rt);
+        if (garment) {
+          onInitStep?.('garment');
+          await enqueueGarment(rt);
+        }
         if (sessionId !== generation) return null;
+        onInitStep?.('ready');
         return rt;
       } catch (error) {
         if (sessionId !== generation) return null;
