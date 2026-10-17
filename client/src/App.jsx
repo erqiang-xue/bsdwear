@@ -26,6 +26,29 @@ const CONNECTION_LABELS = {
   disconnected: '试穿流已断开',
 };
 
+const GARMENT_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
+
+function garmentKind(file) {
+  const type = (file?.type || '').toLowerCase();
+  if (type === 'image/jpg' || type === 'image/jpeg') return 'image/jpeg';
+  if (type === 'image/png' || type === 'image/webp') return type;
+  const name = file?.name || '';
+  if (/\.jpe?g$/i.test(name)) return 'image/jpeg';
+  if (/\.png$/i.test(name)) return 'image/png';
+  if (/\.webp$/i.test(name)) return 'image/webp';
+  if (!type) return 'image/jpeg';
+  return '';
+}
+
+function fileNameFromUrl(url) {
+  try {
+    const name = decodeURIComponent(new URL(url).pathname.split('/').filter(Boolean).pop() || '');
+    return name || 'garment.jpg';
+  } catch {
+    return 'garment.jpg';
+  }
+}
+
 export default function App() {
   const videoRef = useRef(null);
   const sessionRef = useRef(null);
@@ -33,8 +56,10 @@ export default function App() {
   const recorderRef = useRef(null);
   const replayUrlRef = useRef('');
   const autoStopRef = useRef(false);
+  const liveStartedRef = useRef(0);
+  const bankedRef = useRef(0);
   const [phase, setPhase] = useState('idle');
-  const [status, setStatus] = useState('点击开启摄像头，开始试穿流。');
+  const [status, setStatus] = useState('打开摄像头后开始试穿。默认 10 秒后自动停止。');
   const [error, setError] = useState('');
   const [garmentName, setGarmentName] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
@@ -43,6 +68,10 @@ export default function App() {
   const [recording, setRecording] = useState(false);
   const [recordingBlob, setRecordingBlob] = useState(null);
   const [replayName, setReplayName] = useState('');
+  const [dragOver, setDragOver] = useState(false);
+  const [garmentUrl, setGarmentUrl] = useState('');
+  const [readingUrl, setReadingUrl] = useState(false);
+  const [clock, setClock] = useState({ banked: 0, elapsed: 0 });
 
   async function finishRecording() {
     const recorder = recorderRef.current;
@@ -92,6 +121,30 @@ export default function App() {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
   }, [previewUrl]);
+
+  useEffect(() => {
+    if (phase !== 'live') {
+      if (liveStartedRef.current) {
+        const elapsed = Math.max(0, Math.floor((Date.now() - liveStartedRef.current) / 1000));
+        liveStartedRef.current = 0;
+        bankedRef.current += elapsed;
+        setClock({ banked: bankedRef.current, elapsed: 0 });
+      }
+      return undefined;
+    }
+
+    const started = Date.now();
+    liveStartedRef.current = started;
+    const id = setInterval(() => {
+      const elapsed = Math.max(0, Math.floor((Date.now() - started) / 1000));
+      setClock((prev) =>
+        prev.elapsed === elapsed && prev.banked === bankedRef.current
+          ? prev
+          : { banked: bankedRef.current, elapsed },
+      );
+    }, 250);
+    return () => clearInterval(id);
+  }, [phase]);
 
   function attachStream(stream, { remote = false } = {}) {
     releaseReplay();
@@ -167,7 +220,7 @@ export default function App() {
     sessionRef.current?.stop();
     markSessionIdle();
     setError('');
-    setStatus('已停止。');
+    setStatus('已停止，摄像头已关闭。');
   }
 
   async function startRecording() {
@@ -231,129 +284,247 @@ export default function App() {
     }
   }
 
-  async function onGarment(event) {
-    const file = event.target.files?.[0];
-    event.target.value = '';
+  async function applyGarmentFile(file) {
     if (!file) return;
-    if (file.type && !['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    const kind = garmentKind(file);
+    if (!kind || (file.type && !GARMENT_TYPES.has(file.type.toLowerCase()) && !/\.(jpe?g|png|webp)$/i.test(file.name || ''))) {
       setError('请上传 JPEG、PNG 或 WebP 上装图片。');
       return;
     }
 
+    const typed = file.type ? file : new File([file], file.name || 'garment.jpg', { type: kind });
     setPreviewUrl((current) => {
       if (current) URL.revokeObjectURL(current);
-      return URL.createObjectURL(file);
+      return URL.createObjectURL(typed);
     });
-    setGarmentName(file.name);
+    setGarmentName(typed.name);
     setError('');
 
     try {
-      const result = await sessionRef.current.applyGarment(file);
+      const result = await sessionRef.current.applyGarment(typed);
       setStatus(result.applied ? '上装已更新，预览会持续变化。' : '已选择上装，开启试穿流后会自动换上。');
     } catch (applyError) {
       setError(applyError?.message || '应用上装失败。');
     }
   }
 
+  async function onGarment(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    await applyGarmentFile(file);
+  }
+
+  function onDrop(event) {
+    event.preventDefault();
+    setDragOver(false);
+    const file = event.dataTransfer?.files?.[0];
+    if (file) void applyGarmentFile(file);
+  }
+
+  async function onGarmentUrl(event) {
+    event.preventDefault();
+    const url = garmentUrl.trim();
+    if (!url) return;
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      setError('请输入有效的图片网址。');
+      return;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      setError('请输入 http 或 https 图片网址。');
+      return;
+    }
+
+    setReadingUrl(true);
+    setError('');
+    try {
+      const response = await fetch(parsed.href);
+      if (!response.ok) throw new Error('无法读取该图片网址。');
+      const blob = await response.blob();
+      const name = fileNameFromUrl(parsed.href);
+      const file = new File([blob], name, { type: blob.type || '' });
+      if (!garmentKind(file) || (blob.type && !GARMENT_TYPES.has(blob.type.toLowerCase()) && !/\.(jpe?g|png|webp)$/i.test(name))) {
+        setError('请使用 JPEG、PNG 或 WebP 图片网址。');
+        return;
+      }
+      await applyGarmentFile(file);
+    } catch (urlError) {
+      const message = urlError?.message;
+      setError(!message || /failed to fetch|load failed|network/i.test(message) ? '无法读取该网址，请改用本地图片。' : message);
+    } finally {
+      setReadingUrl(false);
+    }
+  }
+
   const live = phase === 'live' || phase === 'starting';
+  const showEmpty = phase === 'idle' && !hasRemote && !replayName;
+  const limit = parseMaxSeconds(maxSeconds);
+  const remaining = phase === 'live' ? Math.max(0, limit - clock.elapsed) : limit;
+  const totalSeconds = clock.banked + (phase === 'live' ? clock.elapsed : 0);
+  const remainPct = Math.round((remaining / limit) * 100);
 
   return (
     <div className="page">
       <header className="topbar">
-        <div>
+        <div className="brand">
           <p className="mark">bsdwear</p>
           <h1>实时上装试穿</h1>
         </div>
-        <p className="cost">标准模式约 $0.02/秒。默认最长 10 秒，停止后不再计费。</p>
+        <p className="cost">约 $0.02/秒，默认 10 秒后自动停止。</p>
       </header>
 
       <main className="studio">
-        <section className="stage" aria-label="试穿预览">
+        <section className={`stage ${phase === 'replay' ? 'is-replay' : ''}`} aria-label="试穿预览">
           <video ref={videoRef} autoPlay playsInline muted />
-          {phase === 'idle' && !hasRemote ? (
+          {recording ? <p className="rec-pill">录制中</p> : null}
+          {showEmpty ? (
             <div className="stage-empty">
-              <p>摄像头画面会在这里变成持续的试穿预览。</p>
-              <p>先打开摄像头，再上传一件上装。</p>
+              <div className="reticle" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+                <span />
+                <i className="scan" />
+              </div>
+              <h2>镜头打开后，这里显示试穿画面。</h2>
+              <p>先允许摄像头。上装可以稍后更换，不用重新连接。</p>
+              <button type="button" onClick={start} disabled={live}>
+                打开摄像头
+              </button>
+              <p className="stage-tip">{FRONT_CAMERA_TIP}</p>
             </div>
           ) : null}
+          <div className="stage-meta">
+            <p className="stage-status" role="status">
+              {status}
+            </p>
+            <p className="stage-clock">
+              {phase === 'live' ? `剩余 ${remaining} 秒` : `本轮 ${limit} 秒`}
+            </p>
+          </div>
         </section>
 
-        <section className="panel">
-          <p className="status" role="status">
-            {status}
-          </p>
+        <div className="side">
+        <aside className="panel">
+          <div className="meter">
+            <div>
+              <p className="meter-label">本轮剩余</p>
+              <p className="meter-sub">累计试衣 {totalSeconds} 秒</p>
+            </div>
+            <p className="meter-value">
+              {remaining}
+              <span> 秒</span>
+            </p>
+          </div>
+          <div className="meter-track" aria-hidden="true">
+            <span style={{ width: `${remainPct}%` }} />
+          </div>
+
           {error ? (
             <p className="error" role="alert">
               {error}
             </p>
           ) : null}
-          {recording ? <p className="hint">正在录制试穿画面。</p> : null}
-          {recordingBlob && !recording ? <p className="hint">录制已保存，可以下载或回放。</p> : null}
-          {replayName ? <p className="hint">回放：{replayName}</p> : null}
+
+          <div
+            className={`dropzone ${dragOver ? 'is-over' : ''}`}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setDragOver(true);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={onDrop}
+          >
+            {previewUrl ? (
+              <img src={previewUrl} alt="已选上装" />
+            ) : (
+              <div className="drop-placeholder" aria-hidden="true" />
+            )}
+            <div className="drop-copy">
+              <h2>上装图片</h2>
+              <p>{garmentName || '拖入图片，或从设备选择。白底、只有衣服的图效果最好。'}</p>
+              <label className="file-link">
+                选择上装图片
+                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={onGarment} />
+              </label>
+            </div>
+          </div>
+
+          <details className="url-block">
+            <summary>从网址添加上装</summary>
+            <form onSubmit={onGarmentUrl}>
+              <input
+                type="url"
+                inputMode="url"
+                placeholder="https:// 图片地址"
+                aria-label="上装图片网址"
+                value={garmentUrl}
+                onChange={(event) => setGarmentUrl(event.target.value)}
+              />
+              <button type="submit" className="secondary" disabled={readingUrl || !garmentUrl.trim()}>
+                {readingUrl ? '读取中…' : '使用'}
+              </button>
+            </form>
+          </details>
 
           <label className="duration">
-            最长时长（秒）
+            <span>本轮最长（秒）</span>
             <input
               type="number"
               min="1"
               max={MAX_SESSION_SECONDS}
               step="1"
               inputMode="numeric"
-              aria-label="最长时长（秒）"
               value={maxSeconds}
               disabled={live}
               onChange={(event) => setMaxSeconds(parseMaxSeconds(event.target.value))}
             />
           </label>
-          <p className="hint">到时自动断开试穿流并关闭摄像头。</p>
+          <p className="hint">默认 {DEFAULT_MAX_SESSION_SECONDS} 秒。到时自动断开试穿流并关闭摄像头。</p>
           <p className="hint">{FRONT_CAMERA_TIP}</p>
 
-          <div className="actions">
-            <button type="button" onClick={start} disabled={live}>
-              开启摄像头 · 开始试穿流
-            </button>
-            <button type="button" className="secondary" onClick={stop} disabled={!live}>
-              停止
-            </button>
-            <label className="upload">
-              上传上装
-              <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                onChange={onGarment}
-              />
-            </label>
-          </div>
-
-          <div className="actions record-actions">
-            <button type="button" onClick={startRecording} disabled={!live || recording}>
-              开始录制
-            </button>
-            <button type="button" className="secondary" onClick={() => void finishRecording()} disabled={!recording}>
-              停止录制
-            </button>
-            <button type="button" className="secondary" onClick={downloadRecording} disabled={!recordingBlob}>
-              下载
-            </button>
-            {recordingBlob ? (
-              <button type="button" className="secondary" onClick={replayRecording}>
+          <section className="record-block" aria-label="录制与回放">
+            <h2>录制与回放</h2>
+            {recording ? <p className="hint">正在录制试穿画面。</p> : null}
+            {recordingBlob && !recording ? <p className="hint">录制已保存，可以下载或回放。</p> : null}
+            {replayName ? <p className="hint">回放：{replayName}</p> : null}
+            <div className="record-actions">
+              <button type="button" className="secondary" onClick={startRecording} disabled={!live || recording}>
+                开始录制
+              </button>
+              <button type="button" className="secondary" onClick={() => void finishRecording()} disabled={!recording}>
+                停止录制
+              </button>
+              <button type="button" className="secondary" onClick={downloadRecording} disabled={!recordingBlob}>
+                下载
+              </button>
+              <button type="button" className="secondary" onClick={replayRecording} disabled={!recordingBlob}>
                 回放本次录制
               </button>
-            ) : null}
-            <label className="upload">
-              回放文件
-              <input type="file" accept="video/webm,video/mp4,video/*" onChange={onReplayFile} />
-            </label>
-          </div>
-
-          <div className="garment">
-            {previewUrl ? <img src={previewUrl} alt="已选上装" /> : <div className="garment-empty">尚未选择上装</div>}
-            <div>
-              <h2>上装</h2>
-              <p>{garmentName || '白底、只有衣服的图片效果最好。换装不用重新连接。'}</p>
+              <label className="file-link file-link-block">
+                回放文件
+                <input type="file" accept="video/webm,video/mp4,video/*" onChange={onReplayFile} />
+              </label>
             </div>
-          </div>
-        </section>
+          </section>
+        </aside>
+
+        <div className="dock">
+          <button type="button" onClick={start} disabled={live}>
+            开始试穿
+          </button>
+          <button type="button" className="secondary" onClick={() => void stop()} disabled={!live}>
+            停止
+          </button>
+        </div>
+        </div>
       </main>
     </div>
   );
