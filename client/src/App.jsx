@@ -45,11 +45,11 @@ export default function App() {
     };
   }, [previewUrl]);
 
-  function attachRemoteStream(stream) {
+  function attachStream(stream, { remote = false } = {}) {
     const video = videoRef.current;
     if (!video) return;
     video.srcObject = stream;
-    setHasRemote(true);
+    if (remote) setHasRemote(true);
     video.play().catch(() => {});
   }
 
@@ -61,7 +61,8 @@ export default function App() {
     setStatus('正在打开摄像头…');
     try {
       const result = await sessionRef.current.start({
-        onRemoteStream: attachRemoteStream,
+        onLocalStream: (stream) => attachStream(stream),
+        onRemoteStream: (stream) => attachStream(stream, { remote: true }),
         onConnectionChange: (state) => {
           if (CONNECTION_LABELS[state]) setStatus(CONNECTION_LABELS[state]);
         },
@@ -142,12 +143,12 @@ export default function App() {
       <main className="studio">
         <section className="stage" aria-label="试穿预览">
           <video ref={videoRef} autoPlay playsInline muted />
-          {hasRemote ? null : (
+          {phase === 'idle' && !hasRemote ? (
             <div className="stage-empty">
               <p>摄像头画面会在这里变成持续的试穿预览。</p>
               <p>先打开摄像头，再上传一件上装。</p>
             </div>
-          )}
+          ) : null}
         </section>
 
         <section className="panel">
