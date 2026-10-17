@@ -259,7 +259,7 @@ test('an overconstrained camera falls back to a basic user-facing camera', async
   session.stop();
 });
 
-test('connect failure stops the camera', async () => {
+test('connect failure keeps the camera until stop', async () => {
   const stopped = [];
   const session = createTryOnSession({
     model: {},
@@ -276,7 +276,65 @@ test('connect failure stops the camera', async () => {
   });
 
   await assert.rejects(() => session.start({ onRemoteStream: () => {} }), /dial failed/);
+  assert.deepEqual(stopped, []);
+  assert.equal(session.hasLocalStream(), true);
+  session.stop();
   assert.deepEqual(stopped, ['cam']);
+  assert.equal(session.hasLocalStream(), false);
+});
+
+test('opening the camera does not create a try-on client', async () => {
+  let created = 0;
+  const seen = [];
+  const session = createTryOnSession({
+    model: {},
+    getUserMedia: async () => ({ id: 'cam', getTracks: () => [] }),
+    createClient: () => {
+      created += 1;
+      return {};
+    },
+  });
+
+  const stream = await session.openPreview({ onLocalStream: (next) => seen.push(next) });
+  assert.equal(stream.id, 'cam');
+  assert.equal(seen.length, 1);
+  assert.equal(created, 0);
+  session.stop();
+});
+
+test('start reuses an open camera and connects only then', async () => {
+  let mediaCalls = 0;
+  const stream = { id: 'cam', getTracks: () => [] };
+  let connected = null;
+  let clients = 0;
+  const session = createTryOnSession({
+    model: { name: 'lucy-vton-latest' },
+    getUserMedia: async () => {
+      mediaCalls += 1;
+      return stream;
+    },
+    createClient: () => {
+      clients += 1;
+      return {
+        realtime: {
+          connect: async (got, options) => {
+            connected = got;
+            options.onRemoteStream({ id: 'remote' });
+            return { set: async () => {}, disconnect: () => {}, on: () => {} };
+          },
+        },
+      };
+    },
+  });
+
+  await session.openPreview();
+  assert.equal(mediaCalls, 1);
+  assert.equal(clients, 0);
+  await session.start({ onRemoteStream: () => {} });
+  assert.equal(mediaCalls, 1);
+  assert.equal(clients, 1);
+  assert.equal(connected, stream);
+  session.stop();
 });
 
 test('describeStartError names camera and token failures in Chinese', () => {
@@ -486,8 +544,8 @@ test('preferred recording mime type chooses webm before mp4', () => {
 
 test('recording filenames use a webm extension unless the blob is mp4', () => {
   const date = new Date(2026, 9, 17, 2, 5, 9);
-  assert.equal(recordingFilename(date), 'bsdwear-tryon-20261017-020509.webm');
-  assert.equal(recordingFilename(date, 'video/mp4'), 'bsdwear-tryon-20261017-020509.mp4');
+  assert.equal(recordingFilename(date), 'bodideng-tryon-20261017-020509.webm');
+  assert.equal(recordingFilename(date, 'video/mp4'), 'bodideng-tryon-20261017-020509.mp4');
 });
 
 test('mediaStreamFromVideo prefers the video element capture stream', () => {
@@ -576,7 +634,7 @@ test('downloadBlob saves the recording through a webm download link', () => {
     },
   };
 
-  downloadBlob(new Blob(['a'], { type: 'video/webm' }), 'bsdwear-tryon-test.webm', {
+  downloadBlob(new Blob(['a'], { type: 'video/webm' }), 'bodideng-tryon-test.webm', {
     documentRef: doc,
     urlApi: {
       createObjectURL() { return 'blob:recording'; },
@@ -585,7 +643,7 @@ test('downloadBlob saves the recording through a webm download link', () => {
   });
 
   assert.equal(anchors[0].href, 'blob:recording');
-  assert.equal(anchors[0].download, 'bsdwear-tryon-test.webm');
+  assert.equal(anchors[0].download, 'bodideng-tryon-test.webm');
   assert.equal(anchors[0].clicked, true);
   assert.equal(anchors[0].removed, true);
   assert.deepEqual(revoked, ['blob:recording']);

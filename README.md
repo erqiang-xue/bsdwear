@@ -1,4 +1,4 @@
-# bsdwear
+# bodideng
 
 Webcam virtual try-on for tops. The page keeps a live camera preview and continuously dresses the person with Decart Lucy VTON (`lucy-vton-latest`). Uploading a new top updates the same stream; it does not reconnect.
 
@@ -22,11 +22,11 @@ The interface is in Chinese.
    npm run dev
    ```
 
-4. Open http://localhost:5173 . Allow the camera, choose **打开摄像头** or **开始试穿**, then add a top by dropping a file, choosing **选择上装图片**, or pasting an image URL. **停止** disconnects the stream and turns the camera off.
+4. Open http://localhost:5173 . **打开摄像头** shows the local camera and does not call Decart. **开始试穿** is what connects the try-on stream. Add a top by dropping a file, choosing **选择上装图片**, or pasting an image URL. **停止** disconnects the stream and turns the camera off.
 
 On a phone the preview stacks above the controls as a tall 3:4 stage, and **开始试穿** / **停止** stay in a bar at the bottom of the screen. Wider windows keep the preview on the left and the controls on the right.
 
-The try-on stream stops itself after **10 seconds** by default (about $0.20). Change **本轮最长（秒）** before starting; the default stays 10. When the timer ends, the page disconnects Decart, stops the camera, and shows **已自动停止（默认最长 10 秒）**. **停止** cancels that timer.
+The try-on stream stops itself after **10 seconds** by default. Change **本轮最长（秒）** before **开始试穿**; the default stays 10. Opening the camera does not start that timer. When the timer ends, the page disconnects Decart, stops the camera, and shows **已自动停止（默认最长 10 秒）**. **停止** cancels that timer.
 
 While the preview is live, **开始录制** / **停止录制** capture the video element as WebM (MP4 only if the browser cannot record WebM). **下载** saves that file. **回放本次录制** plays it back locally, and **回放文件** plays a video you choose from disk. Replay does not open a Decart session.
 

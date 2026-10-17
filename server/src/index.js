@@ -23,5 +23,5 @@ if (fs.existsSync(clientDist)) {
 
 const port = Number(process.env.PORT) || 3001;
 app.listen(port, () => {
-  console.log(`bsdwear server http://127.0.0.1:${port}`);
+  console.log(`bodideng server http://127.0.0.1:${port}`);
 });

@@ -59,7 +59,7 @@ export default function App() {
   const liveStartedRef = useRef(0);
   const bankedRef = useRef(0);
   const [phase, setPhase] = useState('idle');
-  const [status, setStatus] = useState('打开摄像头后开始试穿。默认 10 秒后自动停止。');
+  const [status, setStatus] = useState('先打开摄像头。点开始试穿后才会连接试穿服务。');
   const [error, setError] = useState('');
   const [garmentName, setGarmentName] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
@@ -162,13 +162,42 @@ export default function App() {
     }
   }
 
+  async function openCameraPreview() {
+    if (startLock.current || phase === 'preview' || phase === 'starting' || phase === 'live') return;
+    startLock.current = true;
+    setError('');
+    setStatus('正在打开摄像头…');
+    try {
+      const stream = await sessionRef.current.openPreview({
+        onLocalStream: (next) => attachStream(next),
+      });
+      if (!stream) {
+        if (!sessionRef.current.hasLocalStream()) {
+          setPhase('idle');
+          setStatus('已停止。');
+        }
+        return;
+      }
+      setPhase('preview');
+      setHasRemote(false);
+      setStatus('摄像头已打开。点开始试穿后才会连接试穿服务。');
+    } catch (cameraError) {
+      setPhase('idle');
+      setHasRemote(false);
+      setError(describeStartError(cameraError));
+      setStatus('摄像头未打开。');
+    } finally {
+      startLock.current = false;
+    }
+  }
+
   async function start() {
     if (startLock.current) return;
     startLock.current = true;
     autoStopRef.current = false;
     setError('');
     setPhase('starting');
-    setStatus('正在打开摄像头…');
+    setStatus('正在连接试穿流…');
     const maxDurationMs = parseMaxSeconds(maxSeconds) * 1000;
     try {
       const result = await sessionRef.current.start({
@@ -205,10 +234,16 @@ export default function App() {
       setStatus('试穿流已连接。上传上装后会直接换装，无需重新连接。');
     } catch (startError) {
       if (startError?.message === '试穿流已经开启。') return;
-      setPhase('idle');
       setHasRemote(false);
-      setError(describeStartError(startError));
-      setStatus('试穿流未开启。');
+      if (sessionRef.current?.hasLocalStream()) {
+        setPhase('preview');
+        setError(describeStartError(startError));
+        setStatus('试穿流未开启。摄像头仍保持打开。');
+      } else {
+        setPhase('idle');
+        setError(describeStartError(startError));
+        setStatus('试穿流未开启。');
+      }
     } finally {
       startLock.current = false;
     }
@@ -360,6 +395,7 @@ export default function App() {
   }
 
   const live = phase === 'live' || phase === 'starting';
+  const cameraOpen = live || phase === 'preview';
   const showEmpty = phase === 'idle' && !hasRemote && !replayName;
   const limit = parseMaxSeconds(maxSeconds);
   const remaining = phase === 'live' ? Math.max(0, limit - clock.elapsed) : limit;
@@ -370,10 +406,9 @@ export default function App() {
     <div className="page">
       <header className="topbar">
         <div className="brand">
-          <p className="mark">bsdwear</p>
+          <p className="mark">bodideng</p>
           <h1>实时上装试穿</h1>
         </div>
-        <p className="cost">约 $0.02/秒，默认 10 秒后自动停止。</p>
       </header>
 
       <main className="studio">
@@ -389,9 +424,9 @@ export default function App() {
                 <span />
                 <i className="scan" />
               </div>
-              <h2>镜头打开后，这里显示试穿画面。</h2>
-              <p>先允许摄像头。上装可以稍后更换，不用重新连接。</p>
-              <button type="button" onClick={start} disabled={live}>
+              <h2>先打开摄像头，看本地画面。</h2>
+              <p>这一步只显示摄像头，不会连接试穿服务。</p>
+              <button type="button" onClick={openCameraPreview} disabled={live}>
                 打开摄像头
               </button>
               <p className="stage-tip">{FRONT_CAMERA_TIP}</p>
@@ -496,7 +531,7 @@ export default function App() {
             {recordingBlob && !recording ? <p className="hint">录制已保存，可以下载或回放。</p> : null}
             {replayName ? <p className="hint">回放：{replayName}</p> : null}
             <div className="record-actions">
-              <button type="button" className="secondary" onClick={startRecording} disabled={!live || recording}>
+              <button type="button" className="secondary" onClick={startRecording} disabled={!cameraOpen || recording}>
                 开始录制
               </button>
               <button type="button" className="secondary" onClick={() => void finishRecording()} disabled={!recording}>
@@ -520,7 +555,7 @@ export default function App() {
           <button type="button" onClick={start} disabled={live}>
             开始试穿
           </button>
-          <button type="button" className="secondary" onClick={() => void stop()} disabled={!live}>
+          <button type="button" className="secondary" onClick={() => void stop()} disabled={!cameraOpen}>
             停止
           </button>
         </div>

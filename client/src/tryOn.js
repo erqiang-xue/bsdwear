@@ -43,7 +43,7 @@ export function recordingFilename(date = new Date(), mimeType = 'video/webm') {
     `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`,
     `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`,
   ].join('-');
-  return `bsdwear-tryon-${stamp}.${extensionForMime(mimeType)}`;
+  return `bodideng-tryon-${stamp}.${extensionForMime(mimeType)}`;
 }
 
 export function mediaStreamFromVideo(video) {
@@ -276,6 +276,7 @@ export function createTryOnSession({
   let setTail = Promise.resolve();
   let timerId = null;
   let suppressRemoteEnd = false;
+  let openingPreview = false;
 
   function clearAutoStop() {
     if (timerId == null) return;
@@ -332,6 +333,36 @@ export function createTryOnSession({
   }
 
   return {
+    hasLocalStream() {
+      return localStream != null;
+    },
+
+    async openPreview({ onLocalStream } = {}) {
+      if (realtimeClient || starting) {
+        throw new Error('试穿流已经开启。');
+      }
+      if (localStream) {
+        onLocalStream?.(localStream);
+        return localStream;
+      }
+      if (openingPreview) return null;
+
+      openingPreview = true;
+      const sessionId = generation;
+      try {
+        const stream = await openCamera(getUserMedia, model);
+        if (sessionId !== generation) {
+          stopTracks(stream);
+          return null;
+        }
+        localStream = stream;
+        onLocalStream?.(stream);
+        return stream;
+      } finally {
+        openingPreview = false;
+      }
+    },
+
     async start({
       onLocalStream,
       onRemoteStream,
@@ -349,14 +380,16 @@ export function createTryOnSession({
       starting = true;
       suppressRemoteEnd = false;
       const sessionId = generation;
-      let stream;
+      let stream = localStream;
       try {
-        stream = await openCamera(getUserMedia, model);
-        if (sessionId !== generation) {
-          stopTracks(stream);
-          return null;
+        if (!stream) {
+          stream = await openCamera(getUserMedia, model);
+          if (sessionId !== generation) {
+            stopTracks(stream);
+            return null;
+          }
+          localStream = stream;
         }
-
         onLocalStream?.(stream);
 
         const client = createClient();
@@ -370,7 +403,6 @@ export function createTryOnSession({
         const rt = await client.realtime.connect(stream, options);
         if (sessionId !== generation) {
           rt.disconnect();
-          stopTracks(stream);
           return null;
         }
 
@@ -391,7 +423,6 @@ export function createTryOnSession({
       } catch (error) {
         if (sessionId !== generation) return null;
         if (realtimeClient) stop();
-        else stopTracks(stream);
         throw error;
       } finally {
         if (sessionId === generation) starting = false;
