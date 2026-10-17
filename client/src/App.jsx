@@ -3,7 +3,7 @@ import { createBrowserTryOnClient, vtonModel } from './decartClient.js';
 import {
   DEFAULT_MAX_SESSION_SECONDS,
   MAX_SESSION_SECONDS,
-  createPreviewRecorder,
+  createClipRecorder,
   createTryOnSession,
   FRONT_CAMERA_TIP,
   describeAutoStop,
@@ -13,6 +13,7 @@ import {
   parseMaxSeconds,
   selectTryOnRecordingStream,
   recordingFilename,
+  recordingStageLabel,
   replaySourceFromFile,
   showLiveStream,
   showReplay,
@@ -53,10 +54,11 @@ export default function App() {
   const videoRef = useRef(null);
   const sessionRef = useRef(null);
   const startLock = useRef(false);
-  const recorderRef = useRef(null);
+  const clipRecorderRef = useRef(null);
   const replayUrlRef = useRef('');
   const autoStopRef = useRef(false);
   const remoteStreamRef = useRef(null);
+  const localStreamRef = useRef(null);
   const liveStartedRef = useRef(0);
   const bankedRef = useRef(0);
   const [phase, setPhase] = useState('idle');
@@ -65,25 +67,36 @@ export default function App() {
   const [garmentName, setGarmentName] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
   const [hasRemote, setHasRemote] = useState(false);
+  const [hasLocal, setHasLocal] = useState(false);
   const [maxSeconds, setMaxSeconds] = useState(DEFAULT_MAX_SESSION_SECONDS);
   const [recording, setRecording] = useState(false);
-  const [recordingBlob, setRecordingBlob] = useState(null);
+  const [recordingStage, setRecordingStage] = useState(null);
+  const [clips, setClips] = useState([]);
   const [replayName, setReplayName] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [garmentUrl, setGarmentUrl] = useState('');
   const [readingUrl, setReadingUrl] = useState(false);
   const [clock, setClock] = useState({ banked: 0, elapsed: 0 });
 
+  function clipsRecorder() {
+    if (!clipRecorderRef.current) clipRecorderRef.current = createClipRecorder();
+    return clipRecorderRef.current;
+  }
+
+  function syncRecording() {
+    const current = clipsRecorder();
+    setRecording(current.isRecording());
+    setRecordingStage(current.stage());
+    setClips(current.clips());
+  }
+
   async function finishRecording() {
-    const recorder = recorderRef.current;
-    if (!recorder) return null;
-    recorderRef.current = null;
-    setRecording(false);
     try {
-      const blob = await recorder.stop();
-      if (blob?.size > 0) setRecordingBlob(blob);
-      return blob;
+      const clip = await clipsRecorder().stop();
+      syncRecording();
+      return clip?.blob ?? null;
     } catch (recordError) {
+      syncRecording();
       setError(recordError?.message || '录制失败。');
       return null;
     }
@@ -105,9 +118,7 @@ export default function App() {
     sessionRef.current = session;
     return () => {
       session.stop();
-      const recorder = recorderRef.current;
-      recorderRef.current = null;
-      recorder?.stop?.()?.catch?.(() => {});
+      clipRecorderRef.current?.stop?.()?.catch?.(() => {});
       const video = videoRef.current;
       if (video) video.srcObject = null;
       if (replayUrlRef.current) {
@@ -153,15 +164,31 @@ export default function App() {
     if (remote) {
       remoteStreamRef.current = stream;
       setHasRemote(true);
+      void (async () => {
+        try {
+          await clipsRecorder().adopt(selectTryOnRecordingStream({
+            localStream: localStreamRef.current,
+            remoteStream: stream,
+          }));
+        } catch (recordError) {
+          setError(recordError?.message || '录制失败。');
+        } finally {
+          syncRecording();
+        }
+      })();
       return;
     }
+    localStreamRef.current = stream;
+    setHasLocal(true);
     remoteStreamRef.current = null;
     setHasRemote(false);
   }
 
   function markSessionIdle() {
     remoteStreamRef.current = null;
+    localStreamRef.current = null;
     setHasRemote(false);
+    setHasLocal(false);
     setPhase('idle');
     const video = videoRef.current;
     if (video && !replayUrlRef.current) {
@@ -267,26 +294,27 @@ export default function App() {
   }
 
   async function startRecording() {
-    if (recorderRef.current) return;
-    const source = selectTryOnRecordingStream({ remoteStream: remoteStreamRef.current });
-    if (!source?.stream || phase !== 'live') {
-      setError('请先开始试穿，再录制生成画面。');
+    const source = selectTryOnRecordingStream({
+      localStream: localStreamRef.current,
+      remoteStream: remoteStreamRef.current,
+    });
+    if (!source?.stream || phase === 'idle' || phase === 'replay') {
+      setError('请先打开摄像头，再录制试穿前或试穿后的画面。');
       return;
     }
     try {
-      const recorder = createPreviewRecorder({ stream: source.stream, ownsStream: source.owned });
-      recorder.start();
-      recorderRef.current = recorder;
-      setRecording(true);
-      setError('');
+      const started = await clipsRecorder().start(source);
+      syncRecording();
+      if (started) setError('');
     } catch (recordError) {
+      syncRecording();
       setError(recordError?.message || '当前浏览器不支持录制。');
     }
   }
 
-  function downloadRecording() {
-    if (!recordingBlob) return;
-    downloadBlob(recordingBlob, recordingFilename(new Date(), recordingBlob.type || 'video/webm'));
+  function downloadClip(clip) {
+    if (!clip?.blob) return;
+    downloadBlob(clip.blob, recordingFilename(new Date(), clip.blob.type || 'video/webm', clip.stage));
   }
 
   function playReplay(source) {
@@ -298,6 +326,9 @@ export default function App() {
       }
       replayUrlRef.current = source.url;
       setReplayName(source.name);
+      localStreamRef.current = null;
+      remoteStreamRef.current = null;
+      setHasLocal(false);
       setHasRemote(false);
       setPhase('replay');
       setError('');
@@ -317,11 +348,11 @@ export default function App() {
     }
   }
 
-  function replayRecording() {
-    if (!recordingBlob) return;
-    const name = recordingFilename(new Date(), recordingBlob.type || 'video/webm');
+  function replayClip(clip) {
+    if (!clip?.blob) return;
+    const name = recordingFilename(new Date(), clip.blob.type || 'video/webm', clip.stage);
     try {
-      playReplay(replaySourceFromFile(new File([recordingBlob], name, { type: recordingBlob.type || 'video/webm' })));
+      playReplay(replaySourceFromFile(new File([clip.blob], name, { type: clip.blob.type || 'video/webm' })));
     } catch (replayError) {
       setError(replayError?.message || '无法回放该文件。');
     }
@@ -404,6 +435,12 @@ export default function App() {
 
   const live = phase === 'live' || phase === 'starting';
   const cameraOpen = live || phase === 'preview';
+  const recordSource = selectTryOnRecordingStream({
+    localStream: hasLocal ? localStreamRef.current : null,
+    remoteStream: hasRemote ? remoteStreamRef.current : null,
+  });
+  const canStartRecording = !recording && phase !== 'idle' && phase !== 'replay' && Boolean(recordSource?.stream);
+  const stageLabel = recordingStageLabel(recordingStage);
   const showEmpty = phase === 'idle' && !hasRemote && !replayName;
   const limit = parseMaxSeconds(maxSeconds);
   const remaining = phase === 'live' ? Math.max(0, limit - clock.elapsed) : limit;
@@ -424,7 +461,7 @@ export default function App() {
       <main className="studio">
         <section className={`stage ${phase === 'replay' ? 'is-replay' : ''}`} aria-label="试穿预览">
           <video ref={videoRef} autoPlay playsInline muted />
-          {recording ? <p className="rec-pill">录制中</p> : null}
+          {recording ? <p className="rec-pill">录制中 · {stageLabel}</p> : null}
           {showEmpty ? (
             <div className="stage-empty">
               <div className="reticle" aria-hidden="true">
@@ -537,23 +574,30 @@ export default function App() {
 
           <section className="record-block" aria-label="录制与回放">
             <h2>录制与回放</h2>
-            <p className="hint">只录制试穿生成画面，连接成功后才能开始。</p>
-            {recording ? <p className="hint">正在录制试穿画面。</p> : null}
-            {recordingBlob && !recording ? <p className="hint">录制已保存，可以下载或回放。</p> : null}
+            <p className="hint">试穿前录摄像头，试穿后录生成画面。</p>
+            {recording ? (
+              <p className="hint">
+                {recordingStage === 'before' ? '正在录制试穿前。点开始试穿后会自动改录试穿后。' : `正在录制${stageLabel}。`}
+              </p>
+            ) : null}
             {replayName ? <p className="hint">回放：{replayName}</p> : null}
             <div className="record-actions">
-              <button type="button" className="secondary" onClick={startRecording} disabled={phase !== 'live' || !hasRemote || recording}>
+              <button type="button" className="secondary" onClick={startRecording} disabled={!canStartRecording}>
                 开始录制
               </button>
               <button type="button" className="secondary" onClick={() => void finishRecording()} disabled={!recording}>
                 停止录制
               </button>
-              <button type="button" className="secondary" onClick={downloadRecording} disabled={!recordingBlob}>
-                下载
-              </button>
-              <button type="button" className="secondary" onClick={replayRecording} disabled={!recordingBlob}>
-                回放本次录制
-              </button>
+              {clips.map((clip) => (
+                <div className="clip-pair" key={clip.stage}>
+                  <button type="button" className="secondary" onClick={() => downloadClip(clip)}>
+                    下载{clip.label}
+                  </button>
+                  <button type="button" className="secondary" onClick={() => replayClip(clip)}>
+                    回放{clip.label}
+                  </button>
+                </div>
+              ))}
               <label className="file-link file-link-block">
                 回放文件
                 <input type="file" accept="video/webm,video/mp4,video/*" onChange={onReplayFile} />
