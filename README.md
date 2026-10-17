@@ -1,70 +1,86 @@
-# 虚拟试穿
+# bsdwear
 
-独立网页小工具：摄像头实时预览 + 上传上装图片 + AI 虚拟试穿（FASHN Try-On Max）。
+Webcam virtual try-on for tops. The page keeps a live camera preview and continuously dresses the person with Decart Lucy VTON (`lucy-vton-latest`). Uploading a new top updates the same stream; it does not reconnect.
 
-第一版只支持上装（T 恤、衬衫、外套），手动点击「试穿」，不做连续视频流。
+The interface is in Chinese.
 
-## 准备工作
+## Run it
 
-1. 复制环境变量模板并填写 Key：
+1. Create an API key at [platform.decart.ai](https://platform.decart.ai). New accounts get free trial credits.
+2. Copy the example env file and set the key in the repository root:
 
-```bash
-cp .env.example .env
-```
+   ```bash
+   cp .env.example .env
+   ```
 
-在 `.env` 中设置：
+   `DECART_API_KEY` is the permanent `dct_*` key. It stays on the server. The browser only receives a short-lived client token from `POST /api/realtime-token`.
 
-- `FASHN_API_KEY`：从 [https://fashn.ai](https://fashn.ai) 获取的 API Key  
-- 或设为 `mock`：不调用真实 API，直接回显人像帧，方便调试界面  
-- `PORT`：后端端口，默认 `3001`
+3. Install and start both processes:
 
-2. 安装依赖：
+   ```bash
+   npm install
+   npm run dev
+   ```
 
-```bash
-cd server && npm install
-cd ../client && npm install
-```
+4. Open http://localhost:5173 . Allow the camera, choose **开启摄像头 · 开始试穿流**, then **上传上装**. **停止** disconnects the stream and turns the camera off.
 
-## 启动
+`GET /api/health` returns `{ "ok": true }`.
 
-终端 A（后端）：
-
-```bash
-npm run dev --prefix server
-```
-
-终端 B（前端）：
+To serve the built client from Express:
 
 ```bash
-npm run dev --prefix client
+npm run build
+npm start
 ```
 
-浏览器打开 [http://localhost:5173](http://localhost:5173)。
+That listens on port 3001 (override with `PORT`).
 
-也可在仓库根目录执行 `npm run dev:server` / `npm run dev:client`。
+## Cost
 
-## 使用步骤
+Lucy VTON realtime in standard mode is about **$0.02 per second** of active generation at 720p. This app does not pass `speed: "fast"` (that mode is about $0.04 per second). Stop the stream when you are finished. See [Decart pricing](https://docs.platform.decart.ai/getting-started/pricing).
 
-1. 点击「开启摄像头」并允许权限  
-2. 上传一张上装商品图  
-3. 摆好姿势，点击「试穿」  
-4. 等待结果；可「下载结果」或再次试穿  
+## How the token stays off the page
 
-## 说明
+`server/` loads `DECART_API_KEY` from the root `.env`, then:
 
-- API Key 只放在服务端 `.env`，不会进入浏览器  
-- 试穿会消耗 FASHN 额度；未配置 Key 时会返回中文错误提示  
-- 无 Key 时可设 `FASHN_API_KEY=mock` 演示 UI 流程  
-- 图片会在前端压缩（最长边 ≤ 1280）后再上传  
+```js
+createDecartClient({ apiKey: process.env.DECART_API_KEY }).tokens.create()
+```
 
-## 测试
+The response is `{ "apiKey": "<short-lived token>" }`. If the key is missing, the endpoint returns a Chinese error and does not call Decart.
+
+The client builds its SDK client with `apiKeyProvider`, so a new token is minted for each connect and reconnect:
+
+```js
+createDecartClient({
+  apiKeyProvider: async () => {
+    const res = await fetch('/api/realtime-token', { method: 'POST' });
+    const { apiKey } = await res.json();
+    return apiKey;
+  },
+});
+```
+
+The camera uses the model's `fps`, `width`, and `height` when the SDK provides them. After connect, a garment upload calls:
+
+```js
+realtimeClient.set({
+  prompt: 'Substitute the current top with the garment in the reference image',
+  image: file,
+  enhance: true,
+});
+```
+
+A plain product photo of the top (JPEG, PNG, or WebP, no person in frame) works best.
+
+## Tests
 
 ```bash
-npm test --prefix server
+npm test
 ```
 
-## 技术栈
+Server tests cover health, the token endpoint, and the missing-key error. They inject a fake Decart client, so they do not spend credits.
 
-- 前端：Vite + React + TypeScript  
-- 后端：Express（同仓库）  
-- 换装：FASHN `tryon-max`
+## Legacy
+
+Single-image try-on through FASHN (`POST /api/try-on`) is not part of this app. Live preview uses Decart Lucy VTON only.
