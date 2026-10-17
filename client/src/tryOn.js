@@ -100,12 +100,41 @@ export function showLiveStream(video, stream) {
   playback?.catch?.(() => {});
 }
 
+// lucy-vton-latest publishes 1280×720 (16:9). Asking the phone front camera
+// for that frame crops the sensor and cuts off the torso. A soft 4:3 ideal
+// at or below 720p keeps shoulders through the waist, and nothing is exact.
+export const FRONT_CAMERA_IDEAL_WIDTH = 960;
+export const FRONT_CAMERA_IDEAL_HEIGHT = 720;
+export const FRONT_CAMERA_MAX_EDGE = 1280;
+export const FRONT_CAMERA_ASPECT = 4 / 3;
+export const TRY_ON_MIRROR = true;
+export const FRONT_CAMERA_TIP = '请退后半步，让肩膀到腰入镜。';
+
+export function frameRateConstraint(fps) {
+  if (typeof fps === 'number' && Number.isFinite(fps)) return { ideal: fps };
+  if (fps == null || typeof fps !== 'object') return undefined;
+  const ideal = fps.ideal ?? fps.max ?? fps.exact ?? fps.min;
+  if (typeof ideal !== 'number') return undefined;
+  const range = { ideal };
+  if (typeof fps.max === 'number') range.max = fps.max;
+  return range;
+}
+
 export function cameraConstraints(model) {
-  const video = { facingMode: 'user' };
-  if (model?.fps != null) video.frameRate = model.fps;
-  if (model?.width != null) video.width = model.width;
-  if (model?.height != null) video.height = model.height;
+  const video = {
+    facingMode: { ideal: 'user' },
+    resizeMode: { ideal: 'none' },
+    aspectRatio: { ideal: FRONT_CAMERA_ASPECT },
+    width: { ideal: FRONT_CAMERA_IDEAL_WIDTH, max: FRONT_CAMERA_MAX_EDGE },
+    height: { ideal: FRONT_CAMERA_IDEAL_HEIGHT, max: FRONT_CAMERA_MAX_EDGE },
+  };
+  const frameRate = frameRateConstraint(model?.fps);
+  if (frameRate) video.frameRate = frameRate;
   return { audio: false, video };
+}
+
+export function relaxedCameraConstraints() {
+  return { audio: false, video: { facingMode: { ideal: 'user' } } };
 }
 
 export function garmentState(image) {
@@ -228,7 +257,7 @@ async function openCamera(getUserMedia, model) {
     return await getUserMedia(cameraConstraints(model));
   } catch (error) {
     if (error?.name !== 'OverconstrainedError') throw error;
-    return getUserMedia({ audio: false, video: { facingMode: 'user' } });
+    return getUserMedia(relaxedCameraConstraints());
   }
 }
 
@@ -333,7 +362,7 @@ export function createTryOnSession({
         const client = createClient();
         const options = {
           model,
-          mirror: 'auto',
+          mirror: TRY_ON_MIRROR,
           onRemoteStream,
         };
         if (onConnectionChange) options.onConnectionChange = onConnectionChange;

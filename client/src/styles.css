@@ -242,8 +242,14 @@ button:disabled {
     text-align: left;
   }
 
-  .stage,
-  video {
-    min-height: 420px;
+  .stage {
+    min-height: 72vh;
+    aspect-ratio: 3 / 4;
+  }
+
+  .stage video {
+    min-height: 100%;
+    height: 100%;
+    object-fit: contain;
   }
 }

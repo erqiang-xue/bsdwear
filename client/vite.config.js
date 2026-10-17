@@ -8,6 +8,9 @@ export default defineConfig({
   // resolves next to the real package file, not .vite/deps.
   optimizeDeps: {
     exclude: ['@decartai/sdk'],
+    // p-retry (pulled in by the excluded SDK) default-imports the CJS `retry`
+    // package. Prebundle that pair so Vite supplies a default export in dev.
+    include: ['p-retry', 'retry'],
   },
   worker: {
     format: 'es',

@@ -65,7 +65,7 @@ createDecartClient({
 });
 ```
 
-The camera uses the model's `fps`, `width`, and `height` when the SDK provides them. After connect, a garment upload calls:
+The camera does not copy Lucy VTON's 1280×720 frame. That 16:9 size makes phone front cameras crop the torso. Capture uses a soft 4:3 ideal (960×720, max edge 1280), `facingMode: { ideal: 'user' }`, and `resizeMode: { ideal: 'none' }`. The published stream is mirrored (`mirror: true`) so the selfie matches the person even when the browser does not report `facingMode`. On a narrow screen the preview is a tall 3:4 stage. After connect, a garment upload calls:
 
 ```js
 realtimeClient.set({

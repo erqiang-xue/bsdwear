@@ -5,6 +5,7 @@ import {
   MAX_SESSION_SECONDS,
   createPreviewRecorder,
   createTryOnSession,
+  FRONT_CAMERA_TIP,
   describeAutoStop,
   describeSessionEnd,
   describeStartError,
@@ -305,6 +306,7 @@ export default function App() {
             />
           </label>
           <p className="hint">到时自动断开试穿流并关闭摄像头。</p>
+          <p className="hint">{FRONT_CAMERA_TIP}</p>
 
           <div className="actions">
             <button type="button" onClick={start} disabled={live}>

@@ -20,30 +20,30 @@ import {
   showReplay,
 } from '../src/tryOn.js';
 
-test('camera constraints use the model fps, width, and height when present', () => {
-  assert.deepEqual(
-    cameraConstraints({ fps: 24, width: 1280, height: 720 }),
-    {
-      audio: false,
-      video: {
-        facingMode: 'user',
-        frameRate: 24,
-        width: 1280,
-        height: 720,
-      },
-    },
-  );
+test('camera constraints keep a soft 4:3 front-camera frame instead of the model size', () => {
+  const { video } = cameraConstraints({ fps: 24, width: 1280, height: 720 });
+
+  assert.deepEqual(video.facingMode, { ideal: 'user' });
+  assert.deepEqual(video.resizeMode, { ideal: 'none' });
+  assert.equal(video.aspectRatio.ideal, 4 / 3);
+  assert.deepEqual(video.width, { ideal: 960, max: 1280 });
+  assert.deepEqual(video.height, { ideal: 720, max: 1280 });
+  assert.deepEqual(video.frameRate, { ideal: 24 });
+  assert.equal(video.width.exact, undefined);
+  assert.equal(video.height.exact, undefined);
+  assert.notEqual(video.width.ideal, 1280);
+  assert.ok(video.aspectRatio.ideal < 1280 / 720);
 });
 
 test('camera constraints stay valid when the model omits capture hints', () => {
-  assert.deepEqual(cameraConstraints({}), {
-    audio: false,
-    video: { facingMode: 'user' },
-  });
-  assert.deepEqual(cameraConstraints(undefined), {
-    audio: false,
-    video: { facingMode: 'user' },
-  });
+  for (const model of [{}, undefined]) {
+    const { audio, video } = cameraConstraints(model);
+    assert.equal(audio, false);
+    assert.deepEqual(video.facingMode, { ideal: 'user' });
+    assert.equal(video.frameRate, undefined);
+    assert.equal(video.width.exact, undefined);
+    assert.equal(video.height.exact, undefined);
+  }
 });
 
 test('fetchRealtimeApiKey posts to the token endpoint and returns apiKey', async () => {
@@ -135,7 +135,7 @@ test('session connects the camera and applies a garment without reconnecting', a
   await session.start({ onRemoteStream: (stream) => seen.push(stream) });
   assert.deepEqual(seen, [remote]);
   assert.equal(connects[0].model, model);
-  assert.equal(connects[0].mirror, 'auto');
+  assert.equal(connects[0].mirror, true);
   assert.equal(connects.length, 1);
 
   const file = { name: 'top.png' };
@@ -255,7 +255,7 @@ test('an overconstrained camera falls back to a basic user-facing camera', async
   });
 
   await session.start({ onRemoteStream: () => {} });
-  assert.deepEqual(calls[1], { audio: false, video: { facingMode: 'user' } });
+  assert.deepEqual(calls[1], { audio: false, video: { facingMode: { ideal: 'user' } } });
   session.stop();
 });
 
