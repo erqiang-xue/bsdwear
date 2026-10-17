@@ -414,8 +414,10 @@ export default function App() {
     <div className="page">
       <header className="topbar">
         <div className="brand">
-          <p className="mark">bodideng</p>
-          <h1>实时上装试穿</h1>
+          <img className="logo" src="/bosideng-logo.png" alt="波司登 BOSIDENG" />
+          <div className="brand-copy">
+            <h1>实时上装试穿</h1>
+          </div>
         </div>
       </header>
 
