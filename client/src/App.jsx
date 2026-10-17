@@ -1,9 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { createBrowserTryOnClient, vtonModel } from './decartClient.js';
 import {
+  DEFAULT_MAX_SESSION_SECONDS,
+  MAX_SESSION_SECONDS,
+  createPreviewRecorder,
   createTryOnSession,
+  FRONT_CAMERA_TIP,
+  describeAutoStop,
   describeSessionEnd,
   describeStartError,
+  downloadBlob,
+  mediaStreamFromVideo,
+  parseMaxSeconds,
+  recordingFilename,
+  replaySourceFromFile,
+  showLiveStream,
+  showReplay,
 } from './tryOn.js';
 
 const CONNECTION_LABELS = {
@@ -18,12 +30,41 @@ export default function App() {
   const videoRef = useRef(null);
   const sessionRef = useRef(null);
   const startLock = useRef(false);
+  const recorderRef = useRef(null);
+  const replayUrlRef = useRef('');
+  const autoStopRef = useRef(false);
   const [phase, setPhase] = useState('idle');
   const [status, setStatus] = useState('点击开启摄像头，开始试穿流。');
   const [error, setError] = useState('');
   const [garmentName, setGarmentName] = useState('');
   const [previewUrl, setPreviewUrl] = useState('');
   const [hasRemote, setHasRemote] = useState(false);
+  const [maxSeconds, setMaxSeconds] = useState(DEFAULT_MAX_SESSION_SECONDS);
+  const [recording, setRecording] = useState(false);
+  const [recordingBlob, setRecordingBlob] = useState(null);
+  const [replayName, setReplayName] = useState('');
+
+  async function finishRecording() {
+    const recorder = recorderRef.current;
+    if (!recorder) return null;
+    recorderRef.current = null;
+    setRecording(false);
+    try {
+      const blob = await recorder.stop();
+      if (blob?.size > 0) setRecordingBlob(blob);
+      return blob;
+    } catch (recordError) {
+      setError(recordError?.message || '录制失败。');
+      return null;
+    }
+  }
+
+  function releaseReplay() {
+    if (!replayUrlRef.current) return;
+    URL.revokeObjectURL(replayUrlRef.current);
+    replayUrlRef.current = '';
+    setReplayName('');
+  }
 
   useEffect(() => {
     const session = createTryOnSession({
@@ -34,8 +75,15 @@ export default function App() {
     sessionRef.current = session;
     return () => {
       session.stop();
+      const recorder = recorderRef.current;
+      recorderRef.current = null;
+      recorder?.stop?.()?.catch?.(() => {});
       const video = videoRef.current;
       if (video) video.srcObject = null;
+      if (replayUrlRef.current) {
+        URL.revokeObjectURL(replayUrlRef.current);
+        replayUrlRef.current = '';
+      }
     };
   }, []);
 
@@ -46,21 +94,32 @@ export default function App() {
   }, [previewUrl]);
 
   function attachStream(stream, { remote = false } = {}) {
-    const video = videoRef.current;
-    if (!video) return;
-    video.srcObject = stream;
+    releaseReplay();
+    showLiveStream(videoRef.current, stream);
     if (remote) setHasRemote(true);
-    video.play().catch(() => {});
+  }
+
+  function markSessionIdle() {
+    setHasRemote(false);
+    setPhase('idle');
+    const video = videoRef.current;
+    if (video && !replayUrlRef.current) {
+      video.srcObject = null;
+      video.controls = false;
+    }
   }
 
   async function start() {
     if (startLock.current) return;
     startLock.current = true;
+    autoStopRef.current = false;
     setError('');
     setPhase('starting');
     setStatus('正在打开摄像头…');
+    const maxDurationMs = parseMaxSeconds(maxSeconds) * 1000;
     try {
       const result = await sessionRef.current.start({
+        maxDurationMs,
         onLocalStream: (stream) => attachStream(stream),
         onRemoteStream: (stream) => attachStream(stream, { remote: true }),
         onConnectionChange: (state) => {
@@ -69,18 +128,26 @@ export default function App() {
         onError: (event) => {
           setError(event?.message || '试穿流连接出错。');
         },
+        onBeforeAutoStop: () => finishRecording(),
+        onAutoStop: ({ maxDurationMs: limit }) => {
+          autoStopRef.current = true;
+          markSessionIdle();
+          setError('');
+          setStatus(describeAutoStop(limit));
+        },
         onSessionEnded: (event) => {
+          void finishRecording();
           setError(describeSessionEnd(event?.reason));
-          setPhase('idle');
-          setHasRemote(false);
+          markSessionIdle();
           sessionRef.current?.stop();
         },
       });
       if (!result) {
         setPhase('idle');
-        setStatus('已停止。');
+        if (!autoStopRef.current) setStatus('已停止。');
         return;
       }
+      if (autoStopRef.current) return;
       setPhase('live');
       setStatus('试穿流已连接。上传上装后会直接换装，无需重新连接。');
     } catch (startError) {
@@ -94,14 +161,74 @@ export default function App() {
     }
   }
 
-  function stop() {
+  async function stop() {
+    autoStopRef.current = false;
+    await finishRecording();
     sessionRef.current?.stop();
-    const video = videoRef.current;
-    if (video) video.srcObject = null;
-    setHasRemote(false);
-    setPhase('idle');
+    markSessionIdle();
     setError('');
     setStatus('已停止。');
+  }
+
+  async function startRecording() {
+    if (recorderRef.current) return;
+    const source = mediaStreamFromVideo(videoRef.current);
+    if (!source?.stream) {
+      setError('没有可录制的画面。');
+      return;
+    }
+    try {
+      const recorder = createPreviewRecorder({ stream: source.stream, ownsStream: source.owned });
+      recorder.start();
+      recorderRef.current = recorder;
+      setRecording(true);
+      setError('');
+    } catch (recordError) {
+      setError(recordError?.message || '当前浏览器不支持录制。');
+    }
+  }
+
+  function downloadRecording() {
+    if (!recordingBlob) return;
+    downloadBlob(recordingBlob, recordingFilename(new Date(), recordingBlob.type || 'video/webm'));
+  }
+
+  function playReplay(source) {
+    void (async () => {
+      await finishRecording();
+      sessionRef.current?.stop();
+      if (replayUrlRef.current && replayUrlRef.current !== source.url) {
+        URL.revokeObjectURL(replayUrlRef.current);
+      }
+      replayUrlRef.current = source.url;
+      setReplayName(source.name);
+      setHasRemote(false);
+      setPhase('replay');
+      setError('');
+      setStatus('正在回放本地文件。');
+      showReplay(videoRef.current, source.url);
+    })();
+  }
+
+  function onReplayFile(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      playReplay(replaySourceFromFile(file));
+    } catch (replayError) {
+      setError(replayError?.message || '无法回放该文件。');
+    }
+  }
+
+  function replayRecording() {
+    if (!recordingBlob) return;
+    const name = recordingFilename(new Date(), recordingBlob.type || 'video/webm');
+    try {
+      playReplay(replaySourceFromFile(new File([recordingBlob], name, { type: recordingBlob.type || 'video/webm' })));
+    } catch (replayError) {
+      setError(replayError?.message || '无法回放该文件。');
+    }
   }
 
   async function onGarment(event) {
@@ -137,7 +264,7 @@ export default function App() {
           <p className="mark">bsdwear</p>
           <h1>实时上装试穿</h1>
         </div>
-        <p className="cost">标准模式约 $0.02/秒，停止后不再计费。</p>
+        <p className="cost">标准模式约 $0.02/秒。默认最长 10 秒，停止后不再计费。</p>
       </header>
 
       <main className="studio">
@@ -160,6 +287,26 @@ export default function App() {
               {error}
             </p>
           ) : null}
+          {recording ? <p className="hint">正在录制试穿画面。</p> : null}
+          {recordingBlob && !recording ? <p className="hint">录制已保存，可以下载或回放。</p> : null}
+          {replayName ? <p className="hint">回放：{replayName}</p> : null}
+
+          <label className="duration">
+            最长时长（秒）
+            <input
+              type="number"
+              min="1"
+              max={MAX_SESSION_SECONDS}
+              step="1"
+              inputMode="numeric"
+              aria-label="最长时长（秒）"
+              value={maxSeconds}
+              disabled={live}
+              onChange={(event) => setMaxSeconds(parseMaxSeconds(event.target.value))}
+            />
+          </label>
+          <p className="hint">到时自动断开试穿流并关闭摄像头。</p>
+          <p className="hint">{FRONT_CAMERA_TIP}</p>
 
           <div className="actions">
             <button type="button" onClick={start} disabled={live}>
@@ -175,6 +322,27 @@ export default function App() {
                 accept="image/jpeg,image/png,image/webp"
                 onChange={onGarment}
               />
+            </label>
+          </div>
+
+          <div className="actions record-actions">
+            <button type="button" onClick={startRecording} disabled={!live || recording}>
+              开始录制
+            </button>
+            <button type="button" className="secondary" onClick={() => void finishRecording()} disabled={!recording}>
+              停止录制
+            </button>
+            <button type="button" className="secondary" onClick={downloadRecording} disabled={!recordingBlob}>
+              下载
+            </button>
+            {recordingBlob ? (
+              <button type="button" className="secondary" onClick={replayRecording}>
+                回放本次录制
+              </button>
+            ) : null}
+            <label className="upload">
+              回放文件
+              <input type="file" accept="video/webm,video/mp4,video/*" onChange={onReplayFile} />
             </label>
           </div>
 
