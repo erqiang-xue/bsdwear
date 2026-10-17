@@ -4,6 +4,7 @@ import {
   DEFAULT_MAX_SESSION_MS,
   TOP_GARMENT_PROMPT,
   cameraConstraints,
+  createClipRecorder,
   createPreviewRecorder,
   createTryOnDecartClient,
   createTryOnSession,
@@ -547,6 +548,8 @@ test('recording filenames use a webm extension unless the blob is mp4', () => {
   const date = new Date(2026, 9, 17, 2, 5, 9);
   assert.equal(recordingFilename(date), 'bodideng-tryon-20261017-020509.webm');
   assert.equal(recordingFilename(date, 'video/mp4'), 'bodideng-tryon-20261017-020509.mp4');
+  assert.equal(recordingFilename(date, 'video/webm', 'before'), 'bodideng-tryon-试穿前-20261017-020509.webm');
+  assert.equal(recordingFilename(date, 'video/mp4', 'after'), 'bodideng-tryon-试穿后-20261017-020509.mp4');
 });
 
 test('try-on recording uses the remote AI stream even if the video element still captures the camera', () => {
@@ -555,9 +558,10 @@ test('try-on recording uses the remote AI stream even if the video element still
     id: 'decart-remote',
     getVideoTracks: () => [{ kind: 'video', readyState: 'live' }],
   };
-  const chosen = selectTryOnRecordingStream({ remoteStream: remote });
+  const chosen = selectTryOnRecordingStream({ remoteStream: remote, localStream: localCamera });
   assert.equal(chosen.stream, remote);
   assert.equal(chosen.source, 'remote');
+  assert.equal(chosen.stage, 'after');
   assert.equal(chosen.owned, false);
   assert.notEqual(chosen.stream, localCamera);
   assert.equal(selectTryOnRecordingStream({ remoteStream: null }), null);
@@ -568,6 +572,95 @@ test('try-on recording uses the remote AI stream even if the video element still
     }),
     null,
   );
+});
+
+test('camera-only recording uses the local MediaStream and never video.captureStream()', () => {
+  let captures = 0;
+  const local = {
+    id: 'local-camera',
+    getVideoTracks: () => [{ kind: 'video', readyState: 'live' }],
+  };
+  const video = {
+    captureStream() {
+      captures += 1;
+      return { id: 'latched-camera' };
+    },
+  };
+  const chosen = selectTryOnRecordingStream({ localStream: local, video });
+  assert.equal(chosen.stream, local);
+  assert.equal(chosen.source, 'local');
+  assert.equal(chosen.stage, 'before');
+  assert.equal(chosen.owned, false);
+  assert.equal(captures, 0);
+  assert.equal(selectTryOnRecordingStream({ localStream: { getVideoTracks: () => [] } }), null);
+  assert.equal(
+    selectTryOnRecordingStream({
+      localStream: { getVideoTracks: () => [{ kind: 'video', readyState: 'ended' }] },
+    }),
+    null,
+  );
+});
+
+test('a before recording splits into a second clip on the remote stream when try-on connects', async () => {
+  FakeMediaRecorder.instances = [];
+  const stopped = [];
+  const local = {
+    id: 'local-camera',
+    getVideoTracks: () => [{ kind: 'video', readyState: 'live' }],
+    getTracks: () => [{ stop: () => stopped.push('local') }],
+  };
+  const remote = {
+    id: 'decart-remote',
+    getVideoTracks: () => [{ kind: 'video', readyState: 'live' }],
+    getTracks: () => [{ stop: () => stopped.push('remote') }],
+  };
+  const clips = createClipRecorder({
+    MediaRecorder: FakeMediaRecorder,
+    isTypeSupported: FakeMediaRecorder.isTypeSupported,
+  });
+
+  await clips.start(selectTryOnRecordingStream({ localStream: local }));
+  assert.equal(clips.stage(), 'before');
+  assert.equal(FakeMediaRecorder.instances[0].stream, local);
+
+  const switched = await clips.adopt(selectTryOnRecordingStream({ localStream: local, remoteStream: remote }));
+  assert.equal(switched, true);
+  assert.equal(clips.stage(), 'after');
+  assert.equal(FakeMediaRecorder.instances[0].state, 'inactive');
+  assert.equal(FakeMediaRecorder.instances.at(-1).stream, remote);
+  assert.notEqual(FakeMediaRecorder.instances.at(-1).stream, local);
+
+  const after = await clips.stop();
+  assert.equal(after.stage, 'after');
+  assert.equal(after.label, '试穿后');
+  assert.deepEqual(
+    clips.clips().map((clip) => clip.stage),
+    ['before', 'after'],
+  );
+  assert.equal(clips.clips()[0].label, '试穿前');
+  assert.deepEqual(stopped, []);
+  assert.equal(await clips.adopt(selectTryOnRecordingStream({ remoteStream: remote })), false);
+});
+
+test('recording the same stage again replaces that clip', async () => {
+  FakeMediaRecorder.instances = [];
+  const local = {
+    id: 'local-camera',
+    getVideoTracks: () => [{ kind: 'video', readyState: 'live' }],
+    getTracks: () => [],
+  };
+  const clips = createClipRecorder({
+    MediaRecorder: FakeMediaRecorder,
+    isTypeSupported: FakeMediaRecorder.isTypeSupported,
+  });
+  const source = selectTryOnRecordingStream({ localStream: local });
+  await clips.start(source);
+  await clips.stop();
+  await clips.start(source);
+  const second = await clips.stop();
+  assert.equal(clips.clips().length, 1);
+  assert.equal(clips.clips()[0].blob, second.blob);
+  assert.equal(clips.clips()[0].label, '试穿前');
 });
 
 test('mediaStreamFromVideo prefers the video element capture stream', () => {

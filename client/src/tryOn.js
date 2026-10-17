@@ -37,13 +37,21 @@ export function extensionForMime(mimeType) {
   return typeof mimeType === 'string' && mimeType.includes('mp4') ? 'mp4' : 'webm';
 }
 
-export function recordingFilename(date = new Date(), mimeType = 'video/webm') {
+export function recordingStageLabel(stage) {
+  if (stage === 'before') return '试穿前';
+  if (stage === 'after') return '试穿后';
+  return '';
+}
+
+export function recordingFilename(date = new Date(), mimeType = 'video/webm', stage) {
   const pad = (value) => String(value).padStart(2, '0');
   const stamp = [
     `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`,
     `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`,
   ].join('-');
-  return `bodideng-tryon-${stamp}.${extensionForMime(mimeType)}`;
+  const mark = recordingStageLabel(stage);
+  const stageMark = mark ? `-${mark}` : '';
+  return `bodideng-tryon${stageMark}-${stamp}.${extensionForMime(mimeType)}`;
 }
 
 export function mediaStreamFromVideo(video) {
@@ -62,12 +70,20 @@ function liveVideoTracks(stream) {
   return tracks.filter((track) => track && track.readyState !== 'ended');
 }
 
-// Record the Decart remote stream itself. video.captureStream() is the wrong
-// source: in Chrome it stays on the first MediaStream assigned to the element,
-// so a recording started from the local camera never follows the AI preview.
-export function selectTryOnRecordingStream({ remoteStream } = {}) {
-  if (liveVideoTracks(remoteStream).length === 0) return null;
-  return { stream: remoteStream, owned: false, source: 'remote' };
+// Record the MediaStream object for the stage on screen. video.captureStream()
+// is the wrong source: in Chrome it stays on the first MediaStream assigned to
+// the element, so it cannot follow a later swap from camera to the AI preview.
+// Before try-on, that object is the local camera. After try-on, it is the
+// Decart remote stream. A recorder cannot change streams, so a take that
+// crosses the boundary becomes two clips.
+export function selectTryOnRecordingStream({ remoteStream, localStream } = {}) {
+  if (liveVideoTracks(remoteStream).length > 0) {
+    return { stream: remoteStream, owned: false, source: 'remote', stage: 'after' };
+  }
+  if (liveVideoTracks(localStream).length > 0) {
+    return { stream: localStream, owned: false, source: 'local', stage: 'before' };
+  }
+  return null;
 }
 
 export function replaySourceFromFile(file, createObjectURL = URL.createObjectURL.bind(URL)) {
@@ -260,6 +276,86 @@ export function createPreviewRecorder({
         recorder.onstop = () => resolve(buildBlob());
         recorder.onerror = (event) => reject(event?.error || new Error('录制失败。'));
         recorder.stop();
+      });
+    },
+  };
+}
+
+function rememberClip(saved, clip) {
+  if (!clip?.blob || clip.blob.size === 0) return;
+  const index = saved.findIndex((item) => item.stage === clip.stage);
+  if (index >= 0) saved[index] = clip;
+  else saved.push(clip);
+  saved.sort((a, b) => Number(a.stage === 'after') - Number(b.stage === 'after'));
+}
+
+export function createClipRecorder({
+  MediaRecorder: MediaRecorderImpl,
+  isTypeSupported,
+  createRecorder,
+} = {}) {
+  const openRecorder = createRecorder
+    || ((options) => createPreviewRecorder({
+      ...options,
+      MediaRecorder: MediaRecorderImpl,
+      isTypeSupported,
+    }));
+  let active = null;
+  const saved = [];
+  let tail = Promise.resolve();
+
+  function enqueue(task) {
+    const run = tail.then(task, task);
+    tail = run.then(() => {}, () => {});
+    return run;
+  }
+
+  async function closeActive() {
+    if (!active) return null;
+    const current = active;
+    active = null;
+    const blob = await current.recorder.stop();
+    const clip = {
+      stage: current.stage,
+      label: recordingStageLabel(current.stage),
+      blob,
+    };
+    rememberClip(saved, clip);
+    return clip.blob?.size > 0 ? clip : null;
+  }
+
+  return {
+    stage() {
+      return active?.stage ?? null;
+    },
+    isRecording() {
+      return active != null;
+    },
+    clips() {
+      return saved.map((clip) => ({ ...clip }));
+    },
+    start(source) {
+      return enqueue(async () => {
+        if (active) return false;
+        if (!source?.stream) throw new Error('没有可录制的画面。');
+        const recorder = openRecorder({ stream: source.stream, ownsStream: source.owned === true });
+        recorder.start();
+        active = { recorder, stage: source.stage, stream: source.stream };
+        return true;
+      });
+    },
+    stop() {
+      return enqueue(() => closeActive());
+    },
+    adopt(source) {
+      return enqueue(async () => {
+        if (!active || active.stage !== 'before' || source?.stage !== 'after' || !source.stream) return false;
+        if (active.stream === source.stream) return false;
+        await closeActive();
+        const recorder = openRecorder({ stream: source.stream, ownsStream: source.owned === true });
+        recorder.start();
+        active = { recorder, stage: source.stage, stream: source.stream };
+        return true;
       });
     },
   };
