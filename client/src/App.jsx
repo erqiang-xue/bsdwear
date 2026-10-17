@@ -407,6 +407,7 @@ export default function App() {
           </div>
         </section>
 
+        <div className="side">
         <aside className="panel">
           <div className="meter">
             <div>
@@ -522,6 +523,7 @@ export default function App() {
           <button type="button" className="secondary" onClick={() => void stop()} disabled={!live}>
             停止
           </button>
+        </div>
         </div>
       </main>
     </div>
