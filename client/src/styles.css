@@ -64,25 +64,36 @@ p {
 
 .topbar {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: center;
   margin-bottom: 14px;
 }
 
-.mark {
-  margin: 0;
-  color: var(--accent);
-  letter-spacing: 0.18em;
-  text-transform: lowercase;
-  font-size: 12px;
-  font-weight: 700;
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.logo {
+  display: block;
+  height: 46px;
+  width: auto;
+  flex: none;
+}
+
+.brand-copy {
+  min-width: 0;
+  padding-top: 2px;
 }
 
 h1 {
-  font-size: 28px;
-  font-weight: 650;
-  letter-spacing: -0.03em;
-  line-height: 1.15;
+  color: #f5f8fc;
+  font-family: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  line-height: 1.2;
 }
 
 .studio {
@@ -599,14 +610,20 @@ button.secondary,
   }
 
   .topbar {
-    flex-direction: row;
-    justify-content: space-between;
-    align-items: end;
-    margin-bottom: 16px;
+    margin-bottom: 18px;
+  }
+
+  .brand {
+    gap: 16px;
+  }
+
+  .logo {
+    height: 64px;
   }
 
   h1 {
-    font-size: 36px;
+    font-size: 30px;
+    letter-spacing: 0.18em;
   }
 
   .studio {
@@ -615,7 +632,7 @@ button.secondary,
     grid-template-areas: "stage side";
     align-items: stretch;
     gap: 18px;
-    height: min(820px, calc(100dvh - 112px));
+    height: min(820px, calc(100dvh - 120px));
     min-height: min(560px, calc(100dvh - 140px));
   }
 
@@ -675,6 +692,15 @@ button.secondary,
 }
 
 @media (max-width: 380px) {
+  .logo {
+    height: 40px;
+  }
+
+  h1 {
+    font-size: 18px;
+    letter-spacing: 0.08em;
+  }
+
   .dropzone {
     grid-template-columns: 72px minmax(0, 1fr);
   }
