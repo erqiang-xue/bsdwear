@@ -108,7 +108,7 @@ export function createTryOnSession({ createClient, getUserMedia, model }) {
   }
 
   return {
-    async start({ onRemoteStream, onConnectionChange, onError, onSessionEnded } = {}) {
+    async start({ onLocalStream, onRemoteStream, onConnectionChange, onError, onSessionEnded } = {}) {
       if (realtimeClient || starting) {
         throw new Error('试穿流已经开启。');
       }
@@ -122,6 +122,8 @@ export function createTryOnSession({ createClient, getUserMedia, model }) {
           stopTracks(stream);
           return null;
         }
+
+        onLocalStream?.(stream);
 
         const client = createClient();
         const options = {
