@@ -1,0 +1,15 @@
+{
+  "name": "bsdwear-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@decartai/sdk": "^0.2.12",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2"
+  }
+}
