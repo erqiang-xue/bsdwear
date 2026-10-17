@@ -57,6 +57,19 @@ export function mediaStreamFromVideo(video) {
   return { stream: video.srcObject ?? null, owned: false };
 }
 
+function liveVideoTracks(stream) {
+  const tracks = stream?.getVideoTracks?.() ?? [];
+  return tracks.filter((track) => track && track.readyState !== 'ended');
+}
+
+// Record the Decart remote stream itself. video.captureStream() is the wrong
+// source: in Chrome it stays on the first MediaStream assigned to the element,
+// so a recording started from the local camera never follows the AI preview.
+export function selectTryOnRecordingStream({ remoteStream } = {}) {
+  if (liveVideoTracks(remoteStream).length === 0) return null;
+  return { stream: remoteStream, owned: false, source: 'remote' };
+}
+
 export function replaySourceFromFile(file, createObjectURL = URL.createObjectURL.bind(URL)) {
   if (!file) return null;
   const type = typeof file.type === 'string' ? file.type : '';

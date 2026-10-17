@@ -28,7 +28,7 @@ On a phone the preview stacks above the controls as a tall 3:4 stage, and **开�
 
 The try-on stream stops itself after **10 seconds** by default. Change **本轮最长（秒）** before **开始试穿**; the default stays 10. Opening the camera does not start that timer. When the timer ends, the page disconnects Decart, stops the camera, and shows **已自动停止（默认最长 10 秒）**. **停止** cancels that timer.
 
-While the preview is live, **开始录制** / **停止录制** capture the video element as WebM (MP4 only if the browser cannot record WebM). **下载** saves that file. **回放本次录制** plays it back locally, and **回放文件** plays a video you choose from disk. Replay does not open a Decart session.
+**开始录制** is available only after **开始试穿** has put the Decart picture on screen. It records that remote try-on stream, not the local camera preview, as WebM (MP4 only if the browser cannot record WebM). **下载** saves that file. **回放本次录制** plays it back locally, and **回放文件** plays a video you choose from disk. Replay does not open a Decart session.
 
 `GET /api/health` returns `{ "ok": true }`.
 

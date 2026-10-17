@@ -10,8 +10,8 @@ import {
   describeSessionEnd,
   describeStartError,
   downloadBlob,
-  mediaStreamFromVideo,
   parseMaxSeconds,
+  selectTryOnRecordingStream,
   recordingFilename,
   replaySourceFromFile,
   showLiveStream,
@@ -56,6 +56,7 @@ export default function App() {
   const recorderRef = useRef(null);
   const replayUrlRef = useRef('');
   const autoStopRef = useRef(false);
+  const remoteStreamRef = useRef(null);
   const liveStartedRef = useRef(0);
   const bankedRef = useRef(0);
   const [phase, setPhase] = useState('idle');
@@ -149,10 +150,17 @@ export default function App() {
   function attachStream(stream, { remote = false } = {}) {
     releaseReplay();
     showLiveStream(videoRef.current, stream);
-    if (remote) setHasRemote(true);
+    if (remote) {
+      remoteStreamRef.current = stream;
+      setHasRemote(true);
+      return;
+    }
+    remoteStreamRef.current = null;
+    setHasRemote(false);
   }
 
   function markSessionIdle() {
+    remoteStreamRef.current = null;
     setHasRemote(false);
     setPhase('idle');
     const video = videoRef.current;
@@ -260,9 +268,9 @@ export default function App() {
 
   async function startRecording() {
     if (recorderRef.current) return;
-    const source = mediaStreamFromVideo(videoRef.current);
-    if (!source?.stream) {
-      setError('没有可录制的画面。');
+    const source = selectTryOnRecordingStream({ remoteStream: remoteStreamRef.current });
+    if (!source?.stream || phase !== 'live') {
+      setError('请先开始试穿，再录制生成画面。');
       return;
     }
     try {
@@ -527,11 +535,12 @@ export default function App() {
 
           <section className="record-block" aria-label="录制与回放">
             <h2>录制与回放</h2>
+            <p className="hint">只录制试穿生成画面，连接成功后才能开始。</p>
             {recording ? <p className="hint">正在录制试穿画面。</p> : null}
             {recordingBlob && !recording ? <p className="hint">录制已保存，可以下载或回放。</p> : null}
             {replayName ? <p className="hint">回放：{replayName}</p> : null}
             <div className="record-actions">
-              <button type="button" className="secondary" onClick={startRecording} disabled={!cameraOpen || recording}>
+              <button type="button" className="secondary" onClick={startRecording} disabled={phase !== 'live' || !hasRemote || recording}>
                 开始录制
               </button>
               <button type="button" className="secondary" onClick={() => void finishRecording()} disabled={!recording}>
