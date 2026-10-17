@@ -28,7 +28,7 @@ On a phone the preview stacks above the controls as a tall 3:4 stage, and **开�
 
 The try-on stream stops itself after **10 seconds** by default. Change **本轮最长（秒）** before **开始试穿**; the default stays 10. Opening the camera does not start that timer. When the timer ends, the page disconnects Decart, stops the camera, and shows **已自动停止（默认最长 10 秒）**. **停止** cancels that timer.
 
-**开始录制** works in two stages. With only the camera open it records that local preview as **试穿前**. After **开始试穿** puts the Decart picture on screen it records that remote stream as **试穿后**, using the remote MediaStream itself rather than `video.captureStream()`. If recording is already running when try-on connects, the camera clip is saved and a second clip starts on the AI stream. Each clip has its own **下载** and **回放**. **回放文件** plays a video you choose from disk. Replay does not open a Decart session. Files are WebM, or MP4 only if the browser cannot record WebM.
+**开始录制** saves one video. With only the camera open, that video is the local preview. If **开始试穿** connects while recording is still running, the same file continues and the picture changes to the Decart try-on. Starting the recording after try-on is already on screen records only the generated picture. The recorder is attached to a canvas, and the canvas paints whichever live frame is current, because `video.captureStream()` stays on the first stream and a MediaRecorder cannot switch inputs. **下载** and **回放** use that one file. **回放文件** plays a video you choose from disk. Replay does not open a Decart session. Files are WebM, or MP4 only if the browser cannot record WebM.
 
 `GET /api/health` returns `{ "ok": true }`.
 

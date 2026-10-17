@@ -37,21 +37,13 @@ export function extensionForMime(mimeType) {
   return typeof mimeType === 'string' && mimeType.includes('mp4') ? 'mp4' : 'webm';
 }
 
-export function recordingStageLabel(stage) {
-  if (stage === 'before') return '试穿前';
-  if (stage === 'after') return '试穿后';
-  return '';
-}
-
-export function recordingFilename(date = new Date(), mimeType = 'video/webm', stage) {
+export function recordingFilename(date = new Date(), mimeType = 'video/webm') {
   const pad = (value) => String(value).padStart(2, '0');
   const stamp = [
     `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`,
     `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`,
   ].join('-');
-  const mark = recordingStageLabel(stage);
-  const stageMark = mark ? `-${mark}` : '';
-  return `bodideng-tryon${stageMark}-${stamp}.${extensionForMime(mimeType)}`;
+  return `bodideng-tryon-${stamp}.${extensionForMime(mimeType)}`;
 }
 
 export function mediaStreamFromVideo(video) {
@@ -70,12 +62,10 @@ function liveVideoTracks(stream) {
   return tracks.filter((track) => track && track.readyState !== 'ended');
 }
 
-// Record the MediaStream object for the stage on screen. video.captureStream()
-// is the wrong source: in Chrome it stays on the first MediaStream assigned to
-// the element, so it cannot follow a later swap from camera to the AI preview.
-// Before try-on, that object is the local camera. After try-on, it is the
-// Decart remote stream. A recorder cannot change streams, so a take that
-// crosses the boundary becomes two clips.
+// Which live picture to draw next. video.captureStream() cannot be the
+// recording itself: Chrome keeps it on the first srcObject, and MediaRecorder
+// cannot change streams. The take is one canvas.captureStream(); this only
+// picks the frame source that canvas paints.
 export function selectTryOnRecordingStream({ remoteStream, localStream } = {}) {
   if (liveVideoTracks(remoteStream).length > 0) {
     return { stream: remoteStream, owned: false, source: 'remote', stage: 'after' };
@@ -281,27 +271,85 @@ export function createPreviewRecorder({
   };
 }
 
-function rememberClip(saved, clip) {
-  if (!clip?.blob || clip.blob.size === 0) return;
-  const index = saved.findIndex((item) => item.stage === clip.stage);
-  if (index >= 0) saved[index] = clip;
-  else saved.push(clip);
-  saved.sort((a, b) => Number(a.stage === 'after') - Number(b.stage === 'after'));
+export const RECORDING_WIDTH = 720;
+export const RECORDING_HEIGHT = 960;
+export const RECORDING_FPS = 30;
+
+export function paintRecordingFrame(ctx, video, width, height) {
+  const frameWidth = video?.videoWidth || 0;
+  const frameHeight = video?.videoHeight || 0;
+  if (!ctx || frameWidth < 1 || frameHeight < 1 || !(video.readyState >= 2)) return false;
+  const scale = Math.min(width / frameWidth, height / frameHeight);
+  const dw = frameWidth * scale;
+  const dh = frameHeight * scale;
+  ctx.fillStyle = '#05080c';
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(video, (width - dw) / 2, (height - dh) / 2, dw, dh);
+  return true;
 }
 
-export function createClipRecorder({
+function browserCanvas() {
+  if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+    throw new Error('当前浏览器不支持录制。');
+  }
+  return document.createElement('canvas');
+}
+
+function browserVideo() {
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.autoplay = true;
+  return video;
+}
+
+async function showRecordingSource(video, stream) {
+  video.muted = true;
+  video.playsInline = true;
+  video.srcObject = stream;
+  if (!(video.readyState >= 2) || !(video.videoWidth > 0)) {
+    await new Promise((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        video.removeEventListener?.('loadeddata', finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, 1000);
+      video.addEventListener?.('loadeddata', finish, { once: true });
+    });
+  }
+  try {
+    await video.play?.();
+  } catch {
+    // The element can still paint frames after a rejected autoplay.
+  }
+}
+
+// One MediaRecorder, bound to a canvas capture stream for the whole take.
+// Swapping the hidden video's srcObject from the camera to the Decart stream
+// changes what the canvas paints. The recorder never sees those streams, so
+// Chrome's video.captureStream latch does not apply.
+export function createContinuousRecorder({
   MediaRecorder: MediaRecorderImpl,
   isTypeSupported,
-  createRecorder,
+  createCanvas = browserCanvas,
+  createVideo = browserVideo,
+  requestFrame = globalThis.requestAnimationFrame?.bind(globalThis)
+    || ((callback) => setTimeout(() => callback(Date.now()), 16)),
+  cancelFrame = globalThis.cancelAnimationFrame?.bind(globalThis) || clearTimeout,
+  width = RECORDING_WIDTH,
+  height = RECORDING_HEIGHT,
+  fps = RECORDING_FPS,
 } = {}) {
-  const openRecorder = createRecorder
-    || ((options) => createPreviewRecorder({
-      ...options,
-      MediaRecorder: MediaRecorderImpl,
-      isTypeSupported,
-    }));
-  let active = null;
-  const saved = [];
+  let recorder = null;
+  let canvas = null;
+  let canvasStream = null;
+  let video = null;
+  let sourceStream = null;
+  let ctx = null;
+  let frameId = null;
+  let running = false;
+  let blob = null;
   let tail = Promise.resolve();
 
   function enqueue(task) {
@@ -310,52 +358,79 @@ export function createClipRecorder({
     return run;
   }
 
-  async function closeActive() {
-    if (!active) return null;
-    const current = active;
-    active = null;
-    const blob = await current.recorder.stop();
-    const clip = {
-      stage: current.stage,
-      label: recordingStageLabel(current.stage),
-      blob,
-    };
-    rememberClip(saved, clip);
-    return clip.blob?.size > 0 ? clip : null;
+  function draw() {
+    if (!running || !ctx || !video) return;
+    paintRecordingFrame(ctx, video, canvas.width, canvas.height);
+    frameId = requestFrame(draw);
   }
 
   return {
-    stage() {
-      return active?.stage ?? null;
-    },
     isRecording() {
-      return active != null;
+      return running;
     },
-    clips() {
-      return saved.map((clip) => ({ ...clip }));
+    blob() {
+      return blob;
     },
-    start(source) {
+    source() {
+      return sourceStream;
+    },
+    start(stream) {
       return enqueue(async () => {
-        if (active) return false;
-        if (!source?.stream) throw new Error('没有可录制的画面。');
-        const recorder = openRecorder({ stream: source.stream, ownsStream: source.owned === true });
-        recorder.start();
-        active = { recorder, stage: source.stage, stream: source.stream };
+        if (running) return false;
+        if (liveVideoTracks(stream).length === 0) throw new Error('没有可录制的画面。');
+        canvas = createCanvas();
+        canvas.width = width;
+        canvas.height = height;
+        if (typeof canvas.captureStream !== 'function') throw new Error('当前浏览器不支持录制。');
+        ctx = canvas.getContext('2d');
+        canvasStream = canvas.captureStream(fps);
+        video = createVideo();
+        await showRecordingSource(video, stream);
+        sourceStream = stream;
+        running = true;
+        draw();
+        try {
+          recorder = createPreviewRecorder({
+            stream: canvasStream,
+            ownsStream: true,
+            MediaRecorder: MediaRecorderImpl,
+            isTypeSupported,
+          });
+          recorder.start();
+        } catch (error) {
+          running = false;
+          if (frameId != null) cancelFrame(frameId);
+          frameId = null;
+          stopTracks(canvasStream);
+          throw error;
+        }
+        blob = null;
+        return true;
+      });
+    },
+    follow(stream) {
+      return enqueue(async () => {
+        if (!running || !video || !stream || stream === sourceStream) return false;
+        if (liveVideoTracks(stream).length === 0) return false;
+        sourceStream = stream;
+        await showRecordingSource(video, stream);
         return true;
       });
     },
     stop() {
-      return enqueue(() => closeActive());
-    },
-    adopt(source) {
       return enqueue(async () => {
-        if (!active || active.stage !== 'before' || source?.stage !== 'after' || !source.stream) return false;
-        if (active.stream === source.stream) return false;
-        await closeActive();
-        const recorder = openRecorder({ stream: source.stream, ownsStream: source.owned === true });
-        recorder.start();
-        active = { recorder, stage: source.stage, stream: source.stream };
-        return true;
+        if (!recorder) return blob;
+        running = false;
+        if (frameId != null) cancelFrame(frameId);
+        frameId = null;
+        sourceStream = null;
+        if (video) video.srcObject = null;
+        video = null;
+        const current = recorder;
+        recorder = null;
+        const next = await current.stop();
+        blob = next?.size > 0 ? next : null;
+        return blob;
       });
     },
   };

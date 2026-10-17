@@ -4,8 +4,9 @@ import {
   DEFAULT_MAX_SESSION_MS,
   TOP_GARMENT_PROMPT,
   cameraConstraints,
-  createClipRecorder,
+  createContinuousRecorder,
   createPreviewRecorder,
+  paintRecordingFrame,
   createTryOnDecartClient,
   createTryOnSession,
   describeAutoStop,
@@ -548,8 +549,6 @@ test('recording filenames use a webm extension unless the blob is mp4', () => {
   const date = new Date(2026, 9, 17, 2, 5, 9);
   assert.equal(recordingFilename(date), 'bodideng-tryon-20261017-020509.webm');
   assert.equal(recordingFilename(date, 'video/mp4'), 'bodideng-tryon-20261017-020509.mp4');
-  assert.equal(recordingFilename(date, 'video/webm', 'before'), 'bodideng-tryon-试穿前-20261017-020509.webm');
-  assert.equal(recordingFilename(date, 'video/mp4', 'after'), 'bodideng-tryon-试穿后-20261017-020509.mp4');
 });
 
 test('try-on recording uses the remote AI stream even if the video element still captures the camera', () => {
@@ -601,66 +600,103 @@ test('camera-only recording uses the local MediaStream and never video.captureSt
   );
 });
 
-test('a before recording splits into a second clip on the remote stream when try-on connects', async () => {
+test('paintRecordingFrame keeps the last picture until the next frame is ready', () => {
+  const calls = [];
+  const ctx = {
+    fillStyle: '',
+    fillRect(...args) { calls.push(['fill', this.fillStyle, ...args]); },
+    drawImage(...args) { calls.push(['draw', ...args]); },
+  };
+  const frame = { videoWidth: 160, videoHeight: 90, readyState: 2 };
+  assert.equal(paintRecordingFrame(ctx, frame, 100, 100), true);
+  assert.equal(calls[0][0], 'fill');
+  assert.equal(calls[1][0], 'draw');
+  assert.equal(calls[1][1], frame);
+  assert.equal(calls[1][2], 0);
+  assert.ok(calls[1][3] > 0);
+  assert.equal(paintRecordingFrame(ctx, { videoWidth: 0, videoHeight: 0, readyState: 0 }, 100, 100), false);
+  assert.equal(calls.filter((call) => call[0] === 'fill').length, 1);
+});
+
+test('a recording that starts on the camera and follows try-on stays one canvas blob', async () => {
   FakeMediaRecorder.instances = [];
   const stopped = [];
+  const videoCaptures = [];
   const local = {
     id: 'local-camera',
     getVideoTracks: () => [{ kind: 'video', readyState: 'live' }],
     getTracks: () => [{ stop: () => stopped.push('local') }],
+    captureStream() { videoCaptures.push('local'); },
   };
   const remote = {
     id: 'decart-remote',
     getVideoTracks: () => [{ kind: 'video', readyState: 'live' }],
     getTracks: () => [{ stop: () => stopped.push('remote') }],
+    captureStream() { videoCaptures.push('remote'); },
   };
-  const clips = createClipRecorder({
+  const draws = [];
+  const canvasStops = [];
+  let scheduled = null;
+  const video = {
+    srcObject: null,
+    videoWidth: 320,
+    videoHeight: 240,
+    readyState: 2,
+    play() { return Promise.resolve(); },
+    captureStream() { videoCaptures.push('element'); return { id: 'latched' }; },
+  };
+  const canvas = {
+    width: 0,
+    height: 0,
+    captureStream(fps) {
+      return {
+        id: 'canvas-stream',
+        fps,
+        getTracks: () => [{ stop: () => canvasStops.push('canvas') }],
+      };
+    },
+    getContext() {
+      return {
+        fillRect() {},
+        drawImage(source) { draws.push(source); },
+      };
+    },
+  };
+  const take = createContinuousRecorder({
     MediaRecorder: FakeMediaRecorder,
     isTypeSupported: FakeMediaRecorder.isTypeSupported,
+    createCanvas: () => canvas,
+    createVideo: () => video,
+    requestFrame(callback) { scheduled = callback; return 1; },
+    cancelFrame() { scheduled = null; },
   });
 
-  await clips.start(selectTryOnRecordingStream({ localStream: local }));
-  assert.equal(clips.stage(), 'before');
-  assert.equal(FakeMediaRecorder.instances[0].stream, local);
+  await take.start(local);
+  assert.equal(FakeMediaRecorder.instances.length, 1);
+  assert.equal(FakeMediaRecorder.instances[0].stream.id, 'canvas-stream');
+  assert.equal(FakeMediaRecorder.instances[0].state, 'recording');
+  assert.equal(video.srcObject, local);
+  assert.equal(draws.at(-1), video);
 
-  const switched = await clips.adopt(selectTryOnRecordingStream({ localStream: local, remoteStream: remote }));
-  assert.equal(switched, true);
-  assert.equal(clips.stage(), 'after');
-  assert.equal(FakeMediaRecorder.instances[0].state, 'inactive');
-  assert.equal(FakeMediaRecorder.instances.at(-1).stream, remote);
-  assert.notEqual(FakeMediaRecorder.instances.at(-1).stream, local);
+  const followed = await take.follow(remote);
+  assert.equal(followed, true);
+  assert.equal(FakeMediaRecorder.instances.length, 1);
+  assert.equal(FakeMediaRecorder.instances[0].state, 'recording');
+  assert.equal(video.srcObject, remote);
+  scheduled?.();
+  assert.equal(draws.at(-1), video);
+  assert.notEqual(FakeMediaRecorder.instances[0].stream, local);
+  assert.notEqual(FakeMediaRecorder.instances[0].stream, remote);
 
-  const after = await clips.stop();
-  assert.equal(after.stage, 'after');
-  assert.equal(after.label, '试穿后');
-  assert.deepEqual(
-    clips.clips().map((clip) => clip.stage),
-    ['before', 'after'],
-  );
-  assert.equal(clips.clips()[0].label, '试穿前');
+  const blob = await take.stop();
+  assert.equal(take.isRecording(), false);
+  assert.equal(blob, take.blob());
+  assert.equal(blob.type, 'video/webm');
+  assert.ok(blob.size > 0);
+  assert.deepEqual(videoCaptures, []);
   assert.deepEqual(stopped, []);
-  assert.equal(await clips.adopt(selectTryOnRecordingStream({ remoteStream: remote })), false);
-});
-
-test('recording the same stage again replaces that clip', async () => {
-  FakeMediaRecorder.instances = [];
-  const local = {
-    id: 'local-camera',
-    getVideoTracks: () => [{ kind: 'video', readyState: 'live' }],
-    getTracks: () => [],
-  };
-  const clips = createClipRecorder({
-    MediaRecorder: FakeMediaRecorder,
-    isTypeSupported: FakeMediaRecorder.isTypeSupported,
-  });
-  const source = selectTryOnRecordingStream({ localStream: local });
-  await clips.start(source);
-  await clips.stop();
-  await clips.start(source);
-  const second = await clips.stop();
-  assert.equal(clips.clips().length, 1);
-  assert.equal(clips.clips()[0].blob, second.blob);
-  assert.equal(clips.clips()[0].label, '试穿前');
+  assert.deepEqual(canvasStops, ['canvas']);
+  assert.equal(await take.follow(remote), false);
 });
 
 test('mediaStreamFromVideo prefers the video element capture stream', () => {
