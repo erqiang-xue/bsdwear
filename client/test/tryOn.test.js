@@ -12,6 +12,7 @@ import {
   downloadBlob,
   fetchRealtimeApiKey,
   mediaStreamFromVideo,
+  selectTryOnRecordingStream,
   parseMaxSeconds,
   preferredRecordingMimeType,
   recordingFilename,
@@ -546,6 +547,27 @@ test('recording filenames use a webm extension unless the blob is mp4', () => {
   const date = new Date(2026, 9, 17, 2, 5, 9);
   assert.equal(recordingFilename(date), 'bodideng-tryon-20261017-020509.webm');
   assert.equal(recordingFilename(date, 'video/mp4'), 'bodideng-tryon-20261017-020509.mp4');
+});
+
+test('try-on recording uses the remote AI stream even if the video element still captures the camera', () => {
+  const localCamera = { id: 'local-camera' };
+  const remote = {
+    id: 'decart-remote',
+    getVideoTracks: () => [{ kind: 'video', readyState: 'live' }],
+  };
+  const chosen = selectTryOnRecordingStream({ remoteStream: remote });
+  assert.equal(chosen.stream, remote);
+  assert.equal(chosen.source, 'remote');
+  assert.equal(chosen.owned, false);
+  assert.notEqual(chosen.stream, localCamera);
+  assert.equal(selectTryOnRecordingStream({ remoteStream: null }), null);
+  assert.equal(selectTryOnRecordingStream({ remoteStream: { getVideoTracks: () => [] } }), null);
+  assert.equal(
+    selectTryOnRecordingStream({
+      remoteStream: { getVideoTracks: () => [{ kind: 'video', readyState: 'ended' }] },
+    }),
+    null,
+  );
 });
 
 test('mediaStreamFromVideo prefers the video element capture stream', () => {
