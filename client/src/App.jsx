@@ -6,9 +6,13 @@ import {
   createContinuousRecorder,
   createTryOnSession,
   FRONT_CAMERA_TIP,
-  appendDanmaku,
+  clearInitLine,
+  createInitLineState,
   describeAutoStop,
   describeInitStep,
+  finishInitLine,
+  pushInitLine,
+  tickInitLine,
   describeSessionEnd,
   initStepForConnection,
   describeStartError,
@@ -78,12 +82,11 @@ export default function App() {
   const [garmentUrl, setGarmentUrl] = useState('');
   const [readingUrl, setReadingUrl] = useState(false);
   const [clock, setClock] = useState({ banked: 0, elapsed: 0 });
-  const [danmaku, setDanmaku] = useState([]);
-  const [danmakuOn, setDanmakuOn] = useState(false);
-  const [danmakuFading, setDanmakuFading] = useState(false);
+  const [initLine, setInitLine] = useState(createInitLineState);
+  const initLineRef = useRef(initLine);
+  const initTimerRef = useRef(null);
   const initVisibleRef = useRef(false);
   const initRunRef = useRef(0);
-  const latestInitRef = useRef('');
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
 
@@ -232,50 +235,33 @@ export default function App() {
     }
   }
 
-  function pushInit(step, detail) {
+  function commitInit(result) {
+    initLineRef.current = result.state;
+    setInitLine(result.state);
+    if (result.state.current && phaseRef.current === 'starting') setStatus(result.state.current);
+    if (result.state.mode === 'off') initVisibleRef.current = false;
+    if (initTimerRef.current) window.clearTimeout(initTimerRef.current);
+    initTimerRef.current = null;
+    if (result.waitMs == null) return;
+    const run = initRunRef.current;
+    initTimerRef.current = window.setTimeout(() => {
+      if (initRunRef.current !== run) return;
+      commitInit(tickInitLine(initLineRef.current, Date.now()));
+    }, result.waitMs);
+  }
+
+  function pushInit(step) {
     if (!initVisibleRef.current) return;
-    const text = describeInitStep(step, detail);
-    if (!text) return;
-    latestInitRef.current = text;
-    setDanmaku((items) => appendDanmaku(items, text));
-    if (phaseRef.current === 'starting') setStatus(text);
+    commitInit(pushInitLine(initLineRef.current, describeInitStep(step), Date.now()));
   }
 
   useEffect(() => {
-    if (phase !== 'starting') return undefined;
-    const id = setInterval(() => {
-      const text = latestInitRef.current;
-      if (!text || !initVisibleRef.current) return;
-      setDanmaku((items) => appendDanmaku(items, text));
-    }, 2600);
-    return () => clearInterval(id);
-  }, [phase]);
-
-  useEffect(() => {
-    if (phase === 'starting') {
-      setDanmakuOn(true);
-      setDanmakuFading(false);
-      return undefined;
-    }
-    if (!initVisibleRef.current) return undefined;
-    const run = initRunRef.current;
-    const hold = phase === 'live' ? 1100 : 180;
-    const fadeAt = window.setTimeout(() => {
-      if (initRunRef.current !== run) return;
-      setDanmakuFading(true);
-    }, hold);
-    const clearAt = window.setTimeout(() => {
-      if (initRunRef.current !== run) return;
-      initVisibleRef.current = false;
-      latestInitRef.current = '';
-      setDanmakuOn(false);
-      setDanmakuFading(false);
-      setDanmaku([]);
-    }, hold + 520);
-    return () => {
-      window.clearTimeout(fadeAt);
-      window.clearTimeout(clearAt);
-    };
+    if (phase === 'starting' || !initVisibleRef.current) return undefined;
+    const result = phase === 'live'
+      ? finishInitLine(initLineRef.current, Date.now())
+      : clearInitLine(initLineRef.current, Date.now());
+    commitInit(result);
+    return undefined;
   }, [phase]);
 
   async function start() {
@@ -286,20 +272,21 @@ export default function App() {
     phaseRef.current = 'starting';
     initRunRef.current += 1;
     initVisibleRef.current = true;
-    latestInitRef.current = '';
-    setDanmaku([]);
-    setDanmakuOn(true);
-    setDanmakuFading(false);
+    if (initTimerRef.current) window.clearTimeout(initTimerRef.current);
+    initTimerRef.current = null;
+    const fresh = createInitLineState();
+    initLineRef.current = fresh;
+    setInitLine(fresh);
     setPhase('starting');
-    setStatus('正在连接试穿流');
+    setStatus('正在准备试穿…');
     const maxDurationMs = parseMaxSeconds(maxSeconds) * 1000;
     try {
       const result = await sessionRef.current.start({
         maxDurationMs,
         onLocalStream: (stream) => attachStream(stream),
         onRemoteStream: (stream) => attachStream(stream, { remote: true }),
-        onInitStep: (step, detail) => pushInit(step, detail),
-        onQueuePosition: (queue) => pushInit('queue', { position: queue?.position }),
+        onInitStep: (step) => pushInit(step),
+        onQueuePosition: () => pushInit('queue'),
         onConnectionChange: (state) => {
           const step = initStepForConnection(state);
           if (step) pushInit(step);
@@ -523,17 +510,11 @@ export default function App() {
       <main className="studio">
         <section className={`stage ${phase === 'replay' ? 'is-replay' : ''}`} aria-label="试穿预览">
           <video ref={videoRef} autoPlay playsInline muted />
-          {danmakuOn ? (
-            <div className={`danmaku ${danmakuFading ? 'is-fading' : ''}`} aria-hidden="true">
-              {danmaku.map((item) => (
-                <span
-                  key={item.id}
-                  className={`danmaku-line lane-${item.lane}`}
-                  style={{ animationDelay: `${item.delay}s` }}
-                >
-                  {item.text}
-                </span>
-              ))}
+          {initLine.mode !== 'off' ? (
+            <div className="danmaku" aria-hidden="true">
+              <p key={`${initLine.shownAt}-${initLine.current}`} className={`danmaku-line ${initLine.mode === 'fading' ? 'is-leaving' : ''}`}>
+                {initLine.current}
+              </p>
             </div>
           ) : null}
           {recording ? <p className="rec-pill">录制中</p> : null}

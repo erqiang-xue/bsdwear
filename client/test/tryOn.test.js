@@ -9,9 +9,15 @@ import {
   paintRecordingFrame,
   createTryOnDecartClient,
   createTryOnSession,
-  appendDanmaku,
+  clearInitLine,
+  createInitLineState,
   describeAutoStop,
   describeInitStep,
+  finishInitLine,
+  INIT_LINE_FADE_MS,
+  INIT_LINE_HOLD_MS,
+  pushInitLine,
+  tickInitLine,
   describeStartError,
   initStepForConnection,
   downloadBlob,
@@ -88,32 +94,51 @@ test('fetchRealtimeApiKey explains a network failure in Chinese', async () => {
   );
 });
 
-test('init danmaku names the real connect phases in Chinese', () => {
-  assert.equal(describeInitStep('camera-ready'), '摄像头已就绪');
-  assert.equal(describeInitStep('camera-opening'), '正在打开摄像头');
-  assert.equal(describeInitStep('token'), '正在获取试穿令牌');
-  assert.equal(describeInitStep('connecting'), '正在连接试穿流');
-  assert.equal(describeInitStep('garment'), '正在换上上装');
-  assert.equal(describeInitStep('ready'), '试穿已就绪');
-  assert.equal(describeInitStep('model', { model: 'lucy-vton-latest' }), '加载模型 lucy-vton-latest');
-  assert.equal(describeInitStep('output', { width: 1280, height: 720 }), '输出 1280×720');
-  assert.equal(describeInitStep('queue', { position: 3 }), '排队第 3 位');
+test('init lines use plain Chinese and hide technical details', () => {
+  const jargon = /模型|令牌|输出|1280|720|分辨率|通道|会话|API|WebRTC|摄像头已就绪/;
+  const samples = [
+    ['camera-opening', '正在打开摄像头…'],
+    ['camera-ready', '正在准备试穿…'],
+    ['model', '正在准备试穿…'],
+    ['output', '正在准备试穿…'],
+    ['token', '正在准备试穿…'],
+    ['connecting', '正在连线…'],
+    ['channel', '正在连线…'],
+    ['queue', '请稍等，前面还有人…'],
+    ['garment', '正在换上衣服…'],
+    ['ready', '马上好了…'],
+    ['generating', '马上好了…'],
+    ['reconnecting', '正在重新连线…'],
+  ];
+  for (const [step, text] of samples) {
+    const line = describeInitStep(step, { model: 'lucy-vton-latest', width: 1280, height: 720, position: 3 });
+    assert.equal(line, text);
+    assert.equal(jargon.test(line), false);
+  }
   assert.equal(describeInitStep('nope'), '');
   assert.equal(initStepForConnection('connecting'), 'channel');
   assert.equal(initStepForConnection('generating'), 'generating');
   assert.equal(initStepForConnection('idle'), '');
 });
 
-test('danmaku lines stagger a burst and ignore an immediate repeat', () => {
-  const first = appendDanmaku([], '正在获取试穿令牌', 1000);
-  const burst = appendDanmaku(first, '正在连接试穿流', 1020);
-  assert.equal(burst.length, 2);
-  assert.equal(burst[1].lane, (first[0].lane + 1) % 5);
-  assert.ok(burst[1].delay > 0);
-  assert.equal(appendDanmaku(burst, '正在连接试穿流', 1500), burst);
-  const again = appendDanmaku(burst, '正在连接试穿流', 3000);
-  assert.equal(again.length, 3);
-  assert.equal(again.at(-1).delay, 0);
+test('init lines appear one at a time and the finished line fades before the next', () => {
+  let state = createInitLineState();
+  let now = 0;
+  for (const step of ['camera-opening', 'model', 'output', 'token', 'connecting', 'garment', 'ready']) {
+    state = pushInitLine(state, describeInitStep(step), now).state;
+  }
+  assert.equal(state.current, '正在打开摄像头…');
+  assert.equal(state.mode, 'visible');
+  assert.deepEqual(state.queue, ['正在准备试穿…', '正在连线…', '正在换上衣服…', '马上好了…']);
+
+  state = tickInitLine(state, INIT_LINE_HOLD_MS).state;
+  assert.equal(state.mode, 'fading');
+  assert.equal(state.current, '正在打开摄像头…');
+
+  state = tickInitLine(state, INIT_LINE_HOLD_MS + INIT_LINE_FADE_MS).state;
+  assert.equal(state.current, '正在准备试穿…');
+  assert.equal(state.mode, 'visible');
+  assert.equal(state.queue[0], '正在连线…');
 });
 
 test('start reports camera, model, token, and a waiting garment before ready', async () => {

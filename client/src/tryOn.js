@@ -208,36 +208,31 @@ export function describeStartError(error) {
   return '开启试穿流失败。';
 }
 
-export function describeInitStep(step, detail = {}) {
+export const INIT_LINE_HOLD_MS = 1100;
+export const INIT_LINE_FADE_MS = 520;
+
+export function describeInitStep(step) {
   switch (step) {
-    case 'camera-ready':
-      return '摄像头已就绪';
     case 'camera-opening':
-      return '正在打开摄像头';
-    case 'token':
-      return '正在获取试穿令牌';
+      return '正在打开摄像头…';
+    case 'camera-ready':
     case 'model':
-      return detail.model ? `加载模型 ${detail.model}` : '正在加载试穿模型';
     case 'output':
-      return detail.width && detail.height ? `输出 ${detail.width}×${detail.height}` : '';
+    case 'token':
+      return '正在准备试穿…';
     case 'connecting':
-      return '正在连接试穿流';
     case 'channel':
-      return '正在建立视频通道';
     case 'connected':
-      return '试穿通道已接通';
-    case 'generating':
-      return '正在生成试穿画面';
-    case 'garment':
-      return '正在换上上装';
-    case 'ready':
-      return '试穿已就绪';
-    case 'reconnecting':
-      return '正在重新连接试穿流';
-    case 'disconnected':
-      return '试穿流已断开';
+      return '正在连线…';
     case 'queue':
-      return Number.isFinite(detail.position) ? `排队第 ${detail.position} 位` : '正在排队等待算力';
+      return '请稍等，前面还有人…';
+    case 'garment':
+      return '正在换上衣服…';
+    case 'generating':
+    case 'ready':
+      return '马上好了…';
+    case 'reconnecting':
+      return '正在重新连线…';
     default:
       return '';
   }
@@ -252,22 +247,66 @@ export function initStepForConnection(state) {
   return '';
 }
 
-export function appendDanmaku(items, text, now = Date.now()) {
-  if (typeof text !== 'string' || text.length === 0) return items;
-  const previous = items.findLast((item) => item.text === text);
-  if (previous && now - previous.at < 1400) return items;
-  const burst = items.filter((item) => now - item.at < 80).length;
-  const lane = ((items.at(-1)?.lane ?? -1) + 1) % 5;
-  return [
-    ...items,
-    {
-      id: `${now}-${items.length}-${text}`,
-      text,
-      lane,
-      at: now,
-      delay: burst * 0.4,
+export function createInitLineState() {
+  return { queue: [], current: '', mode: 'off', shownAt: 0, fadingAt: 0, closing: false };
+}
+
+function queueInitText(state, text) {
+  if (!text || state.current === text || state.queue.at(-1) === text) return state;
+  return { ...state, queue: [...state.queue, text] };
+}
+
+function advanceInitLine(state, now) {
+  if (state.mode === 'fading') {
+    const left = INIT_LINE_FADE_MS - (now - state.fadingAt);
+    if (left > 0) return { state, waitMs: left };
+    state = { ...state, current: '', mode: 'off' };
+  }
+
+  if (state.mode === 'visible') {
+    const more = state.queue.length > 0;
+    if (!more && !state.closing) return { state, waitMs: null };
+    const held = now - state.shownAt;
+    if (held < INIT_LINE_HOLD_MS) return { state, waitMs: INIT_LINE_HOLD_MS - held };
+    return {
+      state: { ...state, mode: 'fading', fadingAt: now },
+      waitMs: INIT_LINE_FADE_MS,
+    };
+  }
+
+  if (state.queue.length === 0) return { state, waitMs: null };
+  const [current, ...queue] = state.queue;
+  const next = { ...state, queue, current, mode: 'visible', shownAt: now, fadingAt: 0 };
+  const shouldLeave = queue.length > 0 || next.closing;
+  return { state: next, waitMs: shouldLeave ? INIT_LINE_HOLD_MS : null };
+}
+
+export function pushInitLine(state, text, now) {
+  return advanceInitLine(queueInitText(state, text), now);
+}
+
+export function tickInitLine(state, now) {
+  return advanceInitLine(state, now);
+}
+
+export function finishInitLine(state, now) {
+  if (state.closing) return advanceInitLine(state, now);
+  return advanceInitLine({ ...state, closing: true }, now);
+}
+
+export function clearInitLine(state, now) {
+  if (!state.current) return { state: createInitLineState(), waitMs: null };
+  return {
+    state: {
+      queue: [],
+      current: state.current,
+      mode: 'fading',
+      shownAt: state.shownAt,
+      fadingAt: now,
+      closing: true,
     },
-  ].slice(-8);
+    waitMs: INIT_LINE_FADE_MS,
+  };
 }
 
 export function describeSessionEnd(reason) {
