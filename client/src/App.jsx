@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { fetchCurrentUser, loginAccount, logoutAccount } from './auth.js';
+import { fetchCurrentUser, logoutAccount, signIn } from './auth.js';
 import { createBrowserTryOnClient, vtonModel } from './decartClient.js';
 import LoginForm from './LoginForm.jsx';
 import {
@@ -371,7 +371,7 @@ export default function App() {
     setAuthPending(true);
     setAuthError('');
     try {
-      setAccount(await loginAccount(username, password));
+      setAccount(await signIn(username, password));
     } catch (loginError) {
       setAuthError(loginError?.message || '登录失败，请重试。');
     } finally {

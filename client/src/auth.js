@@ -1,4 +1,4 @@
-export const CSRF_COOKIE = 'bsdwear_csrf';
+export const CSRF_COOKIE = 'bw_csrf';
 
 export function readCookie(header, name) {
   if (typeof header !== 'string' || !header) return '';
@@ -54,6 +54,13 @@ export async function loginAccount(username, password, fetchImpl = globalThis.fe
   const body = await readBody(response);
   if (!response.ok) throw new Error(body.error || '登录失败，请重试。');
   return body;
+}
+
+export async function signIn(username, password, fetchImpl = globalThis.fetch) {
+  await loginAccount(username, password, fetchImpl);
+  const user = await fetchCurrentUser(fetchImpl);
+  if (!user) throw new Error('登录没有完成，请再试一次。');
+  return user;
 }
 
 export async function fetchCurrentUser(fetchImpl = globalThis.fetch) {

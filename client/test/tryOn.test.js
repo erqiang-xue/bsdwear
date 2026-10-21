@@ -80,7 +80,7 @@ test('fetchRealtimeApiKey sends the readable login check with the token request'
   await fetchRealtimeApiKey(async (url, init) => {
     calls.push({ url, init });
     return { ok: true, json: async () => ({ apiKey: 'ek_from_server' }) };
-  }, { cookie: 'bsdwear_csrf=csrf-value' });
+  }, { cookie: 'bw_csrf=csrf-value' });
   assert.equal(calls[0].init.credentials, 'include');
   assert.equal(calls[0].init.headers['X-CSRF-Token'], 'csrf-value');
 });

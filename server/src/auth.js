@@ -2,10 +2,11 @@ import {
   CSRF_COOKIE,
   PBKDF2_ITERATIONS,
   SESSION_COOKIE,
+  SESSION_DAYS_DEFAULT,
   cookieSecure,
   hashPassword,
   hashToken,
-  newSecret,
+  tokenUrlsafe,
   normalizeUsername,
   readCookie,
   sameSiteSetting,
@@ -26,12 +27,13 @@ export const FORBIDDEN = '没有权限做这件事。';
 
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 128;
-const SESSION_HOURS_DEFAULT = 24 * 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_SESSION_DAYS = 24;
 
-function sessionHours(env) {
-  const value = Number(env.AUTH_SESSION_HOURS);
-  if (!Number.isFinite(value) || value <= 0) return SESSION_HOURS_DEFAULT;
-  return Math.min(value, 24 * 24);
+export function sessionLifetimeMs(env) {
+  const value = Number(env.SESSION_DAYS);
+  const days = Number.isFinite(value) && value > 0 ? Math.min(value, MAX_SESSION_DAYS) : SESSION_DAYS_DEFAULT;
+  return Math.round(days * DAY_MS);
 }
 
 function publicUser(user) {
@@ -65,10 +67,9 @@ export function seedAuth(store, env) {
 export function mountAuth(app, { store, env, now }) {
   const sessionCookie = String(env.AUTH_SESSION_COOKIE || SESSION_COOKIE);
   const csrfCookie = String(env.AUTH_CSRF_COOKIE || CSRF_COOKIE);
-  const hours = sessionHours(env);
   const sameSite = sameSiteSetting(env);
-  const maxAge = Math.round(hours * 60 * 60 * 1000);
-  const dummyHash = hashPassword(`dummy-${newSecret(8)}`, PBKDF2_ITERATIONS);
+  const maxAge = sessionLifetimeMs(env);
+  const dummyHash = hashPassword(`dummy-${tokenUrlsafe(8)}`, PBKDF2_ITERATIONS);
   const seededUsername = seedAuth(store, env);
 
   function clock() {
@@ -143,8 +144,8 @@ export function mountAuth(app, { store, env, now }) {
       return;
     }
 
-    const token = newSecret();
-    const csrf = newSecret();
+    const token = tokenUrlsafe();
+    const csrf = tokenUrlsafe();
     store.createSession({
       userId: user.id,
       tokenHash: hashToken(token),

@@ -96,7 +96,13 @@ test('POST /api/auth/login accepts a phone-style username and sets session plus 
 
     const session = cookies.find((cookie) => cookie.name === SESSION_COOKIE);
     const csrf = cookies.find((cookie) => cookie.name === CSRF_COOKIE);
+    assert.equal(SESSION_COOKIE, 'bw_session');
+    assert.equal(CSRF_COOKIE, 'bw_csrf');
+    assert.notEqual(SESSION_COOKIE, 'jx_session');
     assert.ok(session?.value);
+    assert.match(session.value, /^[A-Za-z0-9_-]+$/);
+    assert.equal(session.value.includes('.'), false);
+    assert.equal(Number(session.flags['max-age']), 7 * 24 * 60 * 60);
     assert.equal(session.flags.httponly, true);
     assert.equal(String(session.flags.samesite).toLowerCase(), 'lax');
     assert.equal(session.flags.secure, undefined);
@@ -352,6 +358,19 @@ test('seed does not reset an existing password, and an admin can create another 
     second.locals.authStore.close();
     await close(restarted.server);
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('SESSION_DAYS sets the cookie lifetime in days', async () => {
+  const app = createApp({ env: seedEnv({ SESSION_DAYS: '1' }) });
+  const { server, base } = await listen(app);
+  try {
+    const { cookies } = await login(base);
+    const session = cookies.find((cookie) => cookie.name === SESSION_COOKIE);
+    assert.equal(Number(session.flags['max-age']), 24 * 60 * 60);
+  } finally {
+    app.locals.authStore.close();
+    await close(server);
   }
 });
 

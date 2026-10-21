@@ -1,8 +1,10 @@
 import { createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto';
 
 export const PBKDF2_ITERATIONS = 200_000;
-export const SESSION_COOKIE = 'bsdwear_session';
-export const CSRF_COOKIE = 'bsdwear_csrf';
+export const SESSION_DAYS_DEFAULT = 7;
+// Distinct from Precisio's jx_session so a shared parent domain cannot mix the two.
+export const SESSION_COOKIE = 'bw_session';
+export const CSRF_COOKIE = 'bw_csrf';
 
 const DIGEST = 'sha256';
 const KEY_LENGTH = 32;
@@ -35,7 +37,7 @@ export function verifyPassword(password, stored) {
   return timingSafeEqual(actual, expected);
 }
 
-export function newSecret(bytes = 32) {
+export function tokenUrlsafe(bytes = 32) {
   return randomBytes(bytes).toString('base64url');
 }
 
