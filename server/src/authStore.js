@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Database from 'better-sqlite3';
+import * as sqlite from 'node:sqlite';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const repoRoot = path.resolve(here, '../..');
@@ -37,11 +37,25 @@ export function resolveAuthDbPath(env = process.env) {
   return ':memory:';
 }
 
+const SQLITE_MISSING = 'Account storage needs Node.js built-in SQLite (node:sqlite). Use Node.js 22.13 or newer, including Node 26. No Visual Studio or native compile step is required.';
+
+function openSqlite(dbPath) {
+  const Database = sqlite.Database ?? sqlite.DatabaseSync;
+  if (typeof Database !== 'function') throw new Error(SQLITE_MISSING);
+  const db = new Database(dbPath);
+  db.exec('PRAGMA foreign_keys = ON');
+  db.exec('PRAGMA busy_timeout = 5000');
+  if (dbPath !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
+  return db;
+}
+
+function plain(row) {
+  return row ? { ...row } : null;
+}
+
 export function openAuthStore(dbPath) {
   if (dbPath !== ':memory:') fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath);
-  db.pragma('foreign_keys = ON');
-  if (dbPath !== ':memory:') db.pragma('journal_mode = WAL');
+  const db = openSqlite(dbPath);
   db.exec(SCHEMA);
 
   const insertUser = db.prepare(
@@ -85,10 +99,10 @@ export function openAuthStore(dbPath) {
       }
     },
     findUserByUsername(username) {
-      return selectUserByUsername.get(username) || null;
+      return plain(selectUserByUsername.get(username));
     },
     findUserById(id) {
-      return selectUserById.get(id) || null;
+      return plain(selectUserById.get(id));
     },
     updatePassword(id, passwordHash) {
       updatePassword.run(passwordHash, id);
@@ -97,7 +111,7 @@ export function openAuthStore(dbPath) {
       insertSession.run(userId, tokenHash, csrfToken, expiresAt, createdAt);
     },
     findActiveSession(tokenHash, nowMs) {
-      return selectActiveSession.get(tokenHash, nowMs) || null;
+      return plain(selectActiveSession.get(tokenHash, nowMs));
     },
     revokeSession(tokenHash, nowMs) {
       revokeSession.run(nowMs, tokenHash);
@@ -106,10 +120,10 @@ export function openAuthStore(dbPath) {
       revokeUserSessions.run(nowMs, userId);
     },
     listSessions() {
-      return listSessions.all();
+      return listSessions.all().map((entry) => plain(entry));
     },
     listUsers() {
-      return listUsers.all();
+      return listUsers.all().map((entry) => plain(entry));
     },
     close() {
       db.close();
