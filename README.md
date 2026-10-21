@@ -15,7 +15,7 @@ The interface is in Chinese.
 
    `DECART_API_KEY` is the permanent `dct_*` key. It stays on the server. The browser only receives a short-lived client token from `POST /api/realtime-token`.
 
-3. Install and start both processes:
+3. Install and start both processes. Node.js 22.13 or newer is required (Node 26 is fine). Account data uses Node's built-in SQLite, so `npm install` does not compile a native module and does not need Visual Studio.
 
    ```bash
    npm install
@@ -34,7 +34,7 @@ The try-on stream stops itself after **10 seconds** by default. Change **本轮�
 
 ## Accounts
 
-Try-on uses its own user list in a SQLite file (`data/auth.sqlite` by default, `AUTH_DB_PATH` to move it). It does not call Precisio and does not share that database. Passwords are stored as PBKDF2-HMAC-SHA256 hashes (200,000 iterations and a random salt). Login sets an opaque cookie (`bw_session`, HttpOnly) and stores only the SHA-256 of that value. A separate readable cookie (`bw_csrf`) is required on later changes. The session lasts 7 days (`SESSION_DAYS`) and is revoked on logout. There is no self-registration, refresh token, or bearer token.
+Try-on uses its own user list in a SQLite file (`data/auth.sqlite` by default, `AUTH_DB_PATH` to move it). The file is opened with Node's built-in `node:sqlite` module, not a native addon, so Windows does not need the Visual Studio C++ build tools. It does not call Precisio and does not share that database. Passwords are stored as PBKDF2-HMAC-SHA256 hashes (200,000 iterations and a random salt). Login sets an opaque cookie (`bw_session`, HttpOnly) and stores only the SHA-256 of that value. A separate readable cookie (`bw_csrf`) is required on later changes. The session lasts 7 days (`SESSION_DAYS`) and is revoked on logout. There is no self-registration, refresh token, or bearer token.
 
 Nothing is seeded unless you turn it on. To create the first admin, set these in the root `.env` and start the server. The password must be at least 8 characters. If that username already exists, startup leaves the password alone.
 
