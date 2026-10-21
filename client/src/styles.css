@@ -65,7 +65,83 @@ p {
 .topbar {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 14px;
+}
+
+.page.is-gate {
+  padding-bottom: 24px;
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.account-name {
+  max-width: 9rem;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account button {
+  min-height: 40px;
+  padding: 8px 14px;
+}
+
+.gate-status {
+  margin: 48px 0;
+  color: var(--muted);
+  text-align: center;
+}
+
+.login-wrap {
+  display: grid;
+  place-items: center;
+  min-height: min(520px, calc(100dvh - 160px));
+}
+
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(420px, 100%);
+  padding: 22px 18px 18px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(16, 24, 32, 0.92);
+  box-shadow:
+    0 0 0 1px rgba(8, 12, 18, 0.8),
+    0 24px 60px rgba(0, 0, 0, 0.35);
+}
+
+.login-card h2 {
+  font-size: 22px;
+  font-weight: 680;
+  letter-spacing: 0.04em;
+}
+
+.login-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.login-card input {
+  min-height: 48px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #0a121a;
+  color: var(--text);
 }
 
 .brand {

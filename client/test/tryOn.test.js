@@ -69,7 +69,20 @@ test('fetchRealtimeApiKey posts to the token endpoint and returns apiKey', async
   });
 
   assert.equal(apiKey, 'ek_from_server');
-  assert.deepEqual(calls, [{ url: '/api/realtime-token', init: { method: 'POST' } }]);
+  assert.equal(calls[0].url, '/api/realtime-token');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.equal(calls[0].init.credentials, 'include');
+  assert.equal(calls[0].init.headers['X-CSRF-Token'], undefined);
+});
+
+test('fetchRealtimeApiKey sends the readable login check with the token request', async () => {
+  const calls = [];
+  await fetchRealtimeApiKey(async (url, init) => {
+    calls.push({ url, init });
+    return { ok: true, json: async () => ({ apiKey: 'ek_from_server' }) };
+  }, { cookie: 'bw_csrf=csrf-value' });
+  assert.equal(calls[0].init.credentials, 'include');
+  assert.equal(calls[0].init.headers['X-CSRF-Token'], 'csrf-value');
 });
 
 test('fetchRealtimeApiKey surfaces the server Chinese error', async () => {
