@@ -8,6 +8,9 @@ import { loadEnvFile } from './loadEnv.js';
 loadEnvFile();
 
 const app = createApp();
+if (app.locals.authSeeded) {
+  console.log(`已创建初始账号 ${app.locals.authSeeded}`);
+}
 const clientDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../client/dist');
 
 if (fs.existsSync(clientDist)) {

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { fetchCurrentUser, loginAccount, logoutAccount } from './auth.js';
 import { createBrowserTryOnClient, vtonModel } from './decartClient.js';
+import LoginForm from './LoginForm.jsx';
 import {
   DEFAULT_MAX_SESSION_SECONDS,
   MAX_SESSION_SECONDS,
@@ -83,6 +85,10 @@ export default function App() {
   const [readingUrl, setReadingUrl] = useState(false);
   const [clock, setClock] = useState({ banked: 0, elapsed: 0 });
   const [initLine, setInitLine] = useState(createInitLineState);
+  const [account, setAccount] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const [authPending, setAuthPending] = useState(false);
   const initLineRef = useRef(initLine);
   const initTimerRef = useRef(null);
   const initVisibleRef = useRef(false);
@@ -119,6 +125,24 @@ export default function App() {
     replayUrlRef.current = '';
     setReplayName('');
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchCurrentUser()
+      .then((user) => {
+        if (cancelled) return;
+        setAccount(user);
+        setAuthReady(true);
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        setAuthError(loadError?.message || '暂时无法确认登录状态，请稍后再试。');
+        setAuthReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const session = createTryOnSession({
@@ -343,6 +367,34 @@ export default function App() {
     setStatus('已停止，摄像头已关闭。');
   }
 
+  async function onLogin(username, password) {
+    setAuthPending(true);
+    setAuthError('');
+    try {
+      setAccount(await loginAccount(username, password));
+    } catch (loginError) {
+      setAuthError(loginError?.message || '登录失败，请重试。');
+    } finally {
+      setAuthPending(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      await logoutAccount();
+    } catch (logoutError) {
+      setError(logoutError?.message || '退出失败，请重试。');
+      return;
+    }
+    autoStopRef.current = false;
+    await finishRecording();
+    sessionRef.current?.stop();
+    markSessionIdle();
+    setError('');
+    setStatus('先打开摄像头。点开始试穿后才会连接试穿服务。');
+    setAccount(null);
+  }
+
   async function startRecording() {
     const source = selectTryOnRecordingStream({
       localStream: localStreamRef.current,
@@ -496,8 +548,10 @@ export default function App() {
   const totalSeconds = clock.banked + (phase === 'live' ? clock.elapsed : 0);
   const remainPct = Math.round((remaining / limit) * 100);
 
+  const signedIn = Boolean(account);
+
   return (
-    <div className="page">
+    <div className={`page ${signedIn ? '' : 'is-gate'}`}>
       <header className="topbar">
         <div className="brand">
           <img className="logo" src="/bosideng-logo.png" alt="波司登 BOSIDENG" />
@@ -505,8 +559,23 @@ export default function App() {
             <h1>实时上装试穿</h1>
           </div>
         </div>
+        {signedIn ? (
+          <div className="account">
+            <span className="account-name">{account.username}</span>
+            <button type="button" className="secondary" onClick={() => void logout()}>
+              退出
+            </button>
+          </div>
+        ) : null}
       </header>
 
+      {!authReady ? (
+        <p className="gate-status" role="status">正在进入…</p>
+      ) : !signedIn ? (
+        <div className="login-wrap">
+          <LoginForm onSubmit={onLogin} pending={authPending} error={authError} />
+        </div>
+      ) : (
       <main className="studio">
         <section className={`stage ${phase === 'replay' ? 'is-replay' : ''}`} aria-label="试穿预览">
           <video ref={videoRef} autoPlay playsInline muted />
@@ -665,6 +734,7 @@ export default function App() {
         </div>
         </div>
       </main>
+      )}
     </div>
   );
 }

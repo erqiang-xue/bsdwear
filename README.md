@@ -22,7 +22,7 @@ The interface is in Chinese.
    npm run dev
    ```
 
-4. Open http://localhost:5173 . **打开摄像头** shows the local camera and does not call Decart. **开始试穿** is what connects the try-on stream. Add a top by dropping a file, choosing **选择上装图片**, or pasting an image URL. **停止** disconnects the stream and turns the camera off.
+4. Create the first account, then open http://localhost:5173 . The camera and try-on controls stay hidden until login. **打开摄像头** shows the local camera and does not call Decart. **开始试穿** is what connects the try-on stream. Add a top by dropping a file, choosing **选择上装图片**, or pasting an image URL. **停止** disconnects the stream and turns the camera off.
 
 On a phone the preview stacks above the controls as a tall 3:4 stage, and **开始试穿** / **停止** stay in a bar at the bottom of the screen. Wider windows keep the preview on the left and the controls on the right.
 
@@ -30,7 +30,48 @@ The try-on stream stops itself after **10 seconds** by default. Change **本轮�
 
 **开始录制** saves one video. With only the camera open, that video is the local preview. If **开始试穿** connects while recording is still running, the same file continues and the picture changes to the Decart try-on. Starting the recording after try-on is already on screen records only the generated picture. The recorder is attached to a canvas, and the canvas paints whichever live frame is current, because `video.captureStream()` stays on the first stream and a MediaRecorder cannot switch inputs. **下载** and **回放** use that one file. **回放文件** plays a video you choose from disk. Replay does not open a Decart session. Files are WebM, or MP4 only if the browser cannot record WebM.
 
-`GET /api/health` returns `{ "ok": true }`.
+`GET /api/health` returns `{ "ok": true }` and does not require login.
+
+## Accounts
+
+Try-on uses its own user list in a SQLite file (`data/auth.sqlite` by default, `AUTH_DB_PATH` to move it). It does not call Precisio and does not share that database. Passwords are stored as PBKDF2-HMAC-SHA256 hashes (200,000 iterations and a random salt). The session token is stored only as a hash and is revoked on logout.
+
+Nothing is seeded unless you turn it on. To create the first admin, set these in the root `.env` and start the server. The password must be at least 8 characters. If that username already exists, startup leaves the password alone.
+
+```bash
+AUTH_SEED=1
+AUTH_SEED_USERNAME=demo
+AUTH_SEED_PASSWORD=choose-a-password
+```
+
+The server prints `已创建初始账号 demo` once. Turn `AUTH_SEED` off after that. An admin can add another account while logged in:
+
+```bash
+curl -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"username":"demo","password":"choose-a-password"}' \
+  http://127.0.0.1:3001/api/auth/login
+
+# Copy the bsdwear_csrf cookie value into the header.
+curl -b cookies.txt -H 'Content-Type: application/json' -H 'X-CSRF-Token: <csrf>' \
+  -d '{"username":"staff01","password":"another-password"}' \
+  http://127.0.0.1:3001/api/auth/users
+```
+
+Change your own password with `POST /api/auth/password` and `{ "currentPassword", "newPassword" }`. That signs every session out.
+
+Login is a username (a phone-style id is fine) and a password. The response sets an HttpOnly session cookie and a readable CSRF cookie. Mutating requests send that CSRF value back in `X-CSRF-Token`.
+
+| Route | Who can call it |
+| --- | --- |
+| `POST /api/auth/login` | Anyone |
+| `GET /api/auth/me` | Signed-in user, otherwise 401 |
+| `POST /api/auth/logout` | Signed-in user, then the session is revoked |
+| `POST /api/auth/password` | Signed-in user |
+| `POST /api/auth/users` | Admin |
+| `POST /api/realtime-token` | Signed-in user. This is what starts a try-on stream |
+| `GET /api/health` | Anyone |
+
+The page shows the current username and **退出**. Ordinary copy stays in Chinese and does not mention cookies or tokens.
 
 To serve the built client from Express:
 
@@ -85,7 +126,7 @@ A plain product photo of the top (JPEG, PNG, or WebP, no person in frame) works 
 npm test
 ```
 
-Server tests cover health, the token endpoint, and the missing-key error. They inject a fake Decart client, so they do not spend credits.
+Server tests cover health, the token endpoint, the missing-key error, login, logout, and the rule that a try-on token requires a session. They inject a fake Decart client, so they do not spend credits.
 
 ## Legacy
 

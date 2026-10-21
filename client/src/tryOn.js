@@ -1,3 +1,5 @@
+import { CSRF_COOKIE, readCookie } from './auth.js';
+
 export const TOP_GARMENT_PROMPT = 'Substitute the current top with the garment in the reference image';
 
 export const DEFAULT_MAX_SESSION_SECONDS = 10;
@@ -164,10 +166,18 @@ export function garmentState(image) {
   };
 }
 
-export async function fetchRealtimeApiKey(fetchImpl = globalThis.fetch) {
+export async function fetchRealtimeApiKey(fetchImpl = globalThis.fetch, options = {}) {
+  const cookie = options.cookie ?? (typeof document === 'undefined' ? '' : document.cookie || '');
+  const headers = { Accept: 'application/json' };
+  const csrf = readCookie(cookie, CSRF_COOKIE);
+  if (csrf) headers['X-CSRF-Token'] = csrf;
   let response;
   try {
-    response = await fetchImpl('/api/realtime-token', { method: 'POST' });
+    response = await fetchImpl('/api/realtime-token', {
+      method: 'POST',
+      credentials: 'include',
+      headers,
+    });
   } catch {
     throw new Error('无法连接试穿服务，请确认后端已启动。');
   }
