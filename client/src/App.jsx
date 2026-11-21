@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { fetchCurrentUser, logoutAccount, signIn } from './auth.js';
+import { centerLoginAction, fetchAuthConfig, fetchCurrentUser, logoutAccount, signIn } from './auth.js';
 import { createBrowserTryOnClient, vtonModel } from './decartClient.js';
 import LoginForm from './LoginForm.jsx';
 import {
@@ -89,6 +89,8 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [authError, setAuthError] = useState('');
   const [authPending, setAuthPending] = useState(false);
+  const [centerEnabled, setCenterEnabled] = useState(false);
+  const [centerErrorCode, setCenterErrorCode] = useState('');
   const initLineRef = useRef(initLine);
   const initTimerRef = useRef(null);
   const initVisibleRef = useRef(false);
@@ -127,11 +129,20 @@ export default function App() {
   }
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('user_center_error') || '';
+    if (code) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('user_center_error');
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+    }
     let cancelled = false;
-    fetchCurrentUser()
-      .then((user) => {
+    Promise.all([fetchCurrentUser(), fetchAuthConfig()])
+      .then(([user, config]) => {
         if (cancelled) return;
         setAccount(user);
+        setCenterEnabled(config.userCenterEnabled);
+        setCenterErrorCode(code);
         setAuthReady(true);
       })
       .catch((loadError) => {
@@ -143,6 +154,12 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!authReady || account || !centerEnabled || centerErrorCode) return undefined;
+    window.location.assign('/auth/oauth/start');
+    return undefined;
+  }, [authReady, account, centerEnabled, centerErrorCode]);
 
   useEffect(() => {
     const session = createTryOnSession({
@@ -549,6 +566,11 @@ export default function App() {
   const remainPct = Math.round((remaining / limit) * 100);
 
   const signedIn = Boolean(account);
+  const centerAction = centerLoginAction({
+    enabled: centerEnabled,
+    signedIn,
+    errorCode: centerErrorCode,
+  });
 
   return (
     <div className={`page ${signedIn ? '' : 'is-gate'}`}>
@@ -571,9 +593,17 @@ export default function App() {
 
       {!authReady ? (
         <p className="gate-status" role="status">正在进入…</p>
+      ) : !signedIn && centerAction.kind === 'redirect' ? (
+        <p className="gate-status" role="status">正在前往用户中心登录。</p>
       ) : !signedIn ? (
         <div className="login-wrap">
-          <LoginForm onSubmit={onLogin} pending={authPending} error={authError} />
+          <LoginForm
+            mode={centerAction.kind === 'error' ? 'center' : 'local'}
+            onSubmit={onLogin}
+            pending={authPending}
+            error={centerAction.kind === 'error' ? centerAction.message : authError}
+            onCenterLogin={() => window.location.assign('/auth/oauth/start')}
+          />
         </div>
       ) : (
       <main className="studio">

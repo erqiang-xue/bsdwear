@@ -61,13 +61,92 @@ Change your own password with `POST /api/auth/password` and `{ "currentPassword"
 
 Login is a username (a phone-style id is fine) and a password. The page shows try-on only after `GET /api/auth/me` succeeds. Logout clears the cookies. Every change except login sends `X-CSRF-Token` matching `bw_csrf`.
 
+## User Center login
+
+Identity can move to the shared User Center. Try-on sessions, garments, and the local account rows stay in this app. The switch is `USER_CENTER_ENABLED`. It defaults to off. While it is off, the username and password form is unchanged, and `GET /auth/oauth/start` returns `USER_CENTER_DISABLED`.
+
+Turn it on and an unsigned visitor is sent to the User Center hosted login page. This app uses the authorization code flow with S256 PKCE. `client_id` defaults to `bsdwear`. There is no client secret, and this app does not send a password or a password hash. The browser returns to `/auth/oauth/callback`. The server exchanges the code at `POST /oauth/token`, reads `GET /oauth/userinfo`, and sets the same `bw_session` and `bw_csrf` cookies. Try-on still calls `POST /api/realtime-token` with those cookies.
+
+The User Center client is already seeded as a public PKCE client with `allow_self_register=false` and `require_password=false`. Do not change that policy. Because self-registration is off, a phone that does not already exist in User Center is rejected there (`SELF_REGISTER_DISABLED`, “该应用未开放自助注册”). This app does not add a public signup page or an SMS login. `require_password=false` means User Center does not demand a password before it issues the code for this client. This app does not add a way around that, and it does not start sending a client secret.
+
+Local password login and `POST /api/auth/password` return `USER_CENTER_REQUIRED` while the flag is on. Logout still only revokes the bsdwear session and clears `bw_session` and `bw_csrf`. It does not call User Center, so a User Center session can remain.
+
+### Run it against a local User Center
+
+User Center is a separate repository. This repository does not change it. In that repo, with the demo SMS provider (the code is printed only in the User Center log):
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn app.main:app --host 0.0.0.0 --port 43123
+```
+
+`ENV=development` and `SMS_PROVIDER=demo`. The hosted login page is http://127.0.0.1:43123/login .
+
+In this repo's `.env`:
+
+```bash
+USER_CENTER_ENABLED=true
+USER_CENTER_BASE_URL=http://127.0.0.1:43123
+USER_CENTER_CLIENT_ID=bsdwear
+USER_CENTER_PUBLIC_URL=http://127.0.0.1:5173
+```
+
+Then `npm install` and `npm run dev`, and open http://127.0.0.1:5173 . Vite proxies `/auth` to the API and keeps the browser host, so the callback stays on port 5173. `npm start` serves the built client from the API on port 3001; set `USER_CENTER_PUBLIC_URL=http://127.0.0.1:3001` for that.
+
+The callback path is `/auth/oauth/callback`. While the public URL is a loopback origin, this app will use:
+
+- http://127.0.0.1:5173/auth/oauth/callback
+- http://localhost:5173/auth/oauth/callback
+- http://127.0.0.1:3001/auth/oauth/callback
+- http://localhost:3001/auth/oauth/callback
+
+`config/clients.json` in User Center currently lists only its own demo callback for `bsdwear`. Register the callbacks above on the User Center process, not in this repo, with `OAUTH_EXTRA_REDIRECT_URIS`. That value is a JSON object:
+
+```text
+OAUTH_EXTRA_REDIRECT_URIS={"bsdwear":["http://127.0.0.1:5173/auth/oauth/callback","http://localhost:5173/auth/oauth/callback","http://127.0.0.1:3001/auth/oauth/callback","http://localhost:3001/auth/oauth/callback"]}
+```
+
+More callbacks this app should accept can be added, comma-separated, in `USER_CENTER_EXTRA_REDIRECT_URIS`. Each one also has to be registered on User Center. Do not commit a production origin into the User Center repository.
+
+The known production front door, for later registration only, is https://wear.erqiang.cn . The callback path there would be `/auth/oauth/callback` (https://wear.erqiang.cn/auth/oauth/callback). It is not a default and it is not required for the local demo. When that host is used, set `USER_CENTER_PUBLIC_URL` in the deployment environment and add the same URL to User Center's `OAUTH_EXTRA_REDIRECT_URIS` under `bsdwear`. Keep `SameSite=lax` (the default). `strict` drops the short-lived `bw_oauth` cookie on the way back from User Center.
+
+### Linking an existing try-on account
+
+Nothing is copied automatically, and a User Center login does not create a try-on user. Passwords stay where they are. This app never sends `password_hash` to User Center.
+
+Match order, after User Center has already authenticated someone:
+
+1. `users.center_user_id`, the User Center `user_id` (`sub`). A later login keeps that row even if the username or phone in the profile is different.
+2. Otherwise the unique username (`preferred_username`), compared without case. A username match wins over a different person's phone. The two rows are not merged.
+3. Otherwise, if the profile has a phone, the normalized mainland mobile (`1` then a digit `3-9` then 9 digits, with `+86`, `0086`, spaces, and hyphens removed). It matches a stored `phone` or a username that is exactly that number, and only when exactly one local user matches.
+
+If the matched row is already linked to a different `user_id`, the callback stops with `IDENTITY_CONFLICT` and does not rebind. If nothing matches, the callback stops with `ACCOUNT_NOT_LINKED` and does not insert a user. A User Center `userinfo` of 401, or a profile without a UUID `sub`, does not open a session.
+
+To let an existing try-on user in, an administrator creates that person in User Center first. Use the same username, the same mainland phone, or both. Do not paste the bsdwear password hash. User Center hashes passwords itself. `POST /api/v1/admin/users` with header `X-Admin-Token` (User Center's `ADMIN_API_TOKEN`, or an access token for a User Center admin):
+
+```bash
+curl -H 'Content-Type: application/json' -H 'X-Admin-Token: <user-center-admin-token>' \
+  -d '{"username":"staff01","phone":"13800138000"}' \
+  http://127.0.0.1:43123/api/v1/admin/users
+```
+
+The local try-on row must already exist (`AUTH_SEED`, or `POST /api/auth/users` by a signed-in admin). That local password cannot be used to sign in while `USER_CENTER_ENABLED=true`. There is no public registration on either side for this client.
+
+`user_center_links` records `legacy_app=bsdwear` and the local user id next to the User Center `user_id`.
+
 | Route | Who can call it |
 | --- | --- |
-| `POST /api/auth/login` | Anyone |
+| `POST /api/auth/login` | Anyone, while User Center login is off. `USER_CENTER_REQUIRED` when it is on |
+| `GET /api/auth/config` | Anyone. `{ "userCenterEnabled": false }` unless the flag is on |
+| `GET /auth/oauth/start` | Redirects to User Center when the flag is on. 404 `USER_CENTER_DISABLED` when it is off |
+| `GET /auth/oauth/callback` | Sets `bw_session` and `bw_csrf` after a User Center login. 404 when the flag is off |
 | `GET /api/auth/me` | Signed-in user, otherwise 401 |
 | `POST /api/auth/logout` | Signed-in user, then the session is revoked |
-| `POST /api/auth/password` | Signed-in user |
-| `POST /api/auth/users` | Admin |
+| `POST /api/auth/password` | Signed-in user, while User Center login is off |
+| `POST /api/auth/users` | Admin. Creates a local try-on account. It is not a public signup |
 | `POST /api/realtime-token` | Signed-in user. This is what starts a try-on stream |
 | `GET /api/health` | Anyone |
 
@@ -126,7 +205,7 @@ A plain product photo of the top (JPEG, PNG, or WebP, no person in frame) works 
 npm test
 ```
 
-Server tests cover health, the token endpoint, the missing-key error, login, logout, and the rule that a try-on token requires a session. They inject a fake Decart client, so they do not spend credits.
+Server tests cover health, the token endpoint, the missing-key error, login, logout, and the rule that a try-on token requires a session. They also cover User Center login with the flag off and on, including PKCE, account linking, and the refusal to create or merge users. They inject a fake Decart client and a fake User Center, so they do not spend credits and do not call a real User Center.
 
 ## Legacy
 

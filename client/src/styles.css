@@ -121,6 +121,10 @@ p {
     0 24px 60px rgba(0, 0, 0, 0.35);
 }
 
+.login-center button {
+  width: 100%;
+}
+
 .login-card h2 {
   font-size: 22px;
   font-weight: 680;
