@@ -1,9 +1,26 @@
 import { useState } from 'react';
 
-export default function LoginForm({ onSubmit, pending, error }) {
+export default function LoginForm({ onSubmit, pending, error, mode = 'local', onCenterLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const ready = username.trim() && password;
+
+  if (mode === 'center') {
+    return (
+      <form className="login-card login-center" onSubmit={(event) => event.preventDefault()}>
+        <h2>用户中心登录</h2>
+        <p className="hint">口令在用户中心填写。试穿账号不会在这里自行注册。</p>
+        {error ? (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <button type="button" onClick={onCenterLogin}>
+          重新登录
+        </button>
+      </form>
+    );
+  }
 
   return (
     <form

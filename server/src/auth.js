@@ -13,6 +13,21 @@ import {
   tokensEqual,
   verifyPassword,
 } from './security.js';
+import {
+  OAUTH_COOKIE,
+  OAUTH_MAX_AGE_MS,
+  UserCenterError,
+  adoptUser,
+  allowedRedirectUris,
+  authorizeUrl,
+  exchangeProfile,
+  packOauth,
+  pkcePair,
+  redirectUriFor,
+  sameSecret,
+  unpackOauth,
+  userCenterConfig,
+} from './userCenter.js';
 
 export const INVALID_LOGIN = '账号或密码不正确。';
 export const SIGN_IN_REQUIRED = '请先登录。';
@@ -24,6 +39,9 @@ export const PASSWORD_FIELDS = '请输入当前密码和新密码。';
 export const CURRENT_PASSWORD = '当前密码不正确。';
 export const USERNAME_TAKEN = '这个账号已经有人使用。';
 export const FORBIDDEN = '没有权限做这件事。';
+export const USER_CENTER_REQUIRED = '请通过用户中心登录。';
+export const USER_CENTER_PASSWORD = '密码在用户中心修改，这里不能改。';
+export const USER_CENTER_DISABLED = '未启用用户中心登录。';
 
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 128;
@@ -64,7 +82,10 @@ export function seedAuth(store, env) {
   return username;
 }
 
-export function mountAuth(app, { store, env, now }) {
+const OAUTH_CODE = /^[A-Z0-9_]{1,40}$/;
+
+export function mountAuth(app, { store, env, now, fetchImpl = globalThis.fetch }) {
+  const center = userCenterConfig(env);
   const sessionCookie = String(env.AUTH_SESSION_COOKIE || SESSION_COOKIE);
   const csrfCookie = String(env.AUTH_CSRF_COOKIE || CSRF_COOKIE);
   const sameSite = sameSiteSetting(env);
@@ -97,6 +118,40 @@ export function mountAuth(app, { store, env, now }) {
     res.clearCookie(csrfCookie, { httpOnly: false, sameSite, secure, path: '/' });
   }
 
+  function oauthCookieOptions(req) {
+    return {
+      httpOnly: true,
+      sameSite,
+      secure: cookieSecure(req, env, sameSite),
+      path: '/auth/oauth',
+      maxAge: OAUTH_MAX_AGE_MS,
+    };
+  }
+
+  function clearOauthCookie(req, res) {
+    const secure = cookieSecure(req, env, sameSite);
+    res.clearCookie(OAUTH_COOKIE, { httpOnly: true, sameSite, secure, path: '/auth/oauth' });
+  }
+
+  function failOauth(req, res, code) {
+    clearOauthCookie(req, res);
+    const safe = OAUTH_CODE.test(code) ? code : 'OAUTH_DENIED';
+    res.redirect(302, `/?user_center_error=${safe}`);
+  }
+
+  function issueSession(req, res, user) {
+    const token = tokenUrlsafe();
+    const csrf = tokenUrlsafe();
+    store.createSession({
+      userId: user.id,
+      tokenHash: hashToken(token),
+      csrfToken: csrf,
+      expiresAt: clock() + maxAge,
+    });
+    setSessionCookies(req, res, token, csrf);
+    return { token, csrf };
+  }
+
   function currentSession(req) {
     const token = readCookie(req.headers.cookie, sessionCookie);
     if (!token) return null;
@@ -125,7 +180,65 @@ export function mountAuth(app, { store, env, now }) {
     next();
   }
 
+  app.get('/api/auth/config', (_req, res) => {
+    res.json({ userCenterEnabled: center.enabled });
+  });
+
+  app.get('/auth/oauth/start', (req, res) => {
+    if (!center.enabled) {
+      res.status(404).json({ error: USER_CENTER_DISABLED, code: 'USER_CENTER_DISABLED' });
+      return;
+    }
+    const redirectUri = redirectUriFor(center, req);
+    if (!allowedRedirectUris(center).includes(redirectUri)) {
+      res.status(400).json({ error: '回调地址不在允许列表中。', code: 'REDIRECT_URI_INVALID' });
+      return;
+    }
+    const { verifier, challenge } = pkcePair();
+    const state = tokenUrlsafe();
+    res.cookie(OAUTH_COOKIE, packOauth({ state, verifier, redirectUri }), oauthCookieOptions(req));
+    res.redirect(302, authorizeUrl(center, redirectUri, state, challenge));
+  });
+
+  app.get('/auth/oauth/callback', async (req, res) => {
+    if (!center.enabled) {
+      res.status(404).json({ error: USER_CENTER_DISABLED, code: 'USER_CENTER_DISABLED' });
+      return;
+    }
+    if (req.query?.error) {
+      failOauth(req, res, 'OAUTH_DENIED');
+      return;
+    }
+    const code = typeof req.query?.code === 'string' ? req.query.code : '';
+    const state = typeof req.query?.state === 'string' ? req.query.state : '';
+    const saved = unpackOauth(readCookie(req.headers.cookie, OAUTH_COOKIE));
+    if (!saved || !code || !sameSecret(String(saved.state || ''), state)) {
+      failOauth(req, res, 'OAUTH_STATE');
+      return;
+    }
+    const redirectUri = String(saved.redirectUri || '');
+    const verifier = String(saved.verifier || '');
+    if (!allowedRedirectUris(center).includes(redirectUri) || verifier.length < 43) {
+      failOauth(req, res, 'OAUTH_STATE');
+      return;
+    }
+    try {
+      const profile = await exchangeProfile(center, fetchImpl, code, redirectUri, verifier);
+      const user = adoptUser(store, profile);
+      issueSession(req, res, user);
+      clearOauthCookie(req, res);
+      res.redirect(302, '/');
+    } catch (error) {
+      const oauthCode = error instanceof UserCenterError ? error.code : 'USER_CENTER_UNAVAILABLE';
+      failOauth(req, res, oauthCode);
+    }
+  });
+
   app.post('/api/auth/login', (req, res) => {
+    if (center.enabled) {
+      res.status(403).json({ error: USER_CENTER_REQUIRED, code: 'USER_CENTER_REQUIRED' });
+      return;
+    }
     const username = normalizeUsername(req.body?.username);
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
     if (!username || !password) {
@@ -144,15 +257,7 @@ export function mountAuth(app, { store, env, now }) {
       return;
     }
 
-    const token = tokenUrlsafe();
-    const csrf = tokenUrlsafe();
-    store.createSession({
-      userId: user.id,
-      tokenHash: hashToken(token),
-      csrfToken: csrf,
-      expiresAt: clock() + maxAge,
-    });
-    setSessionCookies(req, res, token, csrf);
+    issueSession(req, res, user);
     res.json(publicUser(user));
   });
 
@@ -172,6 +277,10 @@ export function mountAuth(app, { store, env, now }) {
   });
 
   app.post('/api/auth/password', requireSession, requireCsrf, (req, res) => {
+    if (center.enabled) {
+      res.status(403).json({ error: USER_CENTER_PASSWORD, code: 'USER_CENTER_REQUIRED' });
+      return;
+    }
     const currentPassword = req.body?.currentPassword;
     const newPassword = req.body?.newPassword;
     if (typeof currentPassword !== 'string' || typeof newPassword !== 'string' || !currentPassword || !newPassword) {

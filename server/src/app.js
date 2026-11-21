@@ -6,7 +6,12 @@ import { openAuthStore, resolveAuthDbPath } from './authStore.js';
 export const MISSING_KEY_ERROR = '未配置 DECART_API_KEY。请在仓库根目录的 .env 中填写后重启服务。';
 export const CREATE_FAILED_ERROR = '创建试穿令牌失败，请检查 DECART_API_KEY 是否有效。';
 
-export function createApp({ env = process.env, createClient = createDecartClient, now = () => Date.now() } = {}) {
+export function createApp({
+  env = process.env,
+  createClient = createDecartClient,
+  now = () => Date.now(),
+  fetchImpl = globalThis.fetch,
+} = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '32kb' }));
@@ -14,7 +19,7 @@ export function createApp({ env = process.env, createClient = createDecartClient
   const store = openAuthStore(resolveAuthDbPath(env));
   let auth;
   try {
-    auth = mountAuth(app, { store, env, now });
+    auth = mountAuth(app, { store, env, now, fetchImpl });
   } catch (error) {
     store.close();
     throw error;

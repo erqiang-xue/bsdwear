@@ -26,6 +26,11 @@ export default defineConfig({
         target: 'http://127.0.0.1:3001',
         changeOrigin: true,
       },
+      // Keep the browser Host so the OAuth callback stays on this dev origin.
+      '/auth': {
+        target: 'http://127.0.0.1:3001',
+        changeOrigin: false,
+      },
     },
   },
 });

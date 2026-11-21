@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CSRF_COOKIE, authHeaders, fetchCurrentUser, loginAccount, logoutAccount, readCookie, signIn } from '../src/auth.js';
+import {
+  CSRF_COOKIE,
+  authHeaders,
+  centerLoginAction,
+  fetchAuthConfig,
+  fetchCurrentUser,
+  loginAccount,
+  logoutAccount,
+  readCookie,
+  signIn,
+  userCenterErrorMessage,
+} from '../src/auth.js';
 
 test('readCookie finds the readable login check value', () => {
   assert.equal(readCookie('', CSRF_COOKIE), '');
@@ -65,6 +76,32 @@ test('signIn stays signed out when the session check does not confirm login', as
     }),
     /登录没有完成/,
   );
+});
+
+test('fetchAuthConfig reads the user center flag and treats failure as off', async () => {
+  const enabled = await fetchAuthConfig(async (url) => {
+    assert.equal(url, '/api/auth/config');
+    return { ok: true, json: async () => ({ userCenterEnabled: true }) };
+  });
+  assert.deepEqual(enabled, { userCenterEnabled: true });
+  const off = await fetchAuthConfig(async () => ({ ok: false, status: 500, json: async () => ({}) }));
+  assert.deepEqual(off, { userCenterEnabled: false });
+  const down = await fetchAuthConfig(async () => {
+    throw new Error('offline');
+  });
+  assert.deepEqual(down, { userCenterEnabled: false });
+});
+
+test('center login stays on the password form until the flag is on', () => {
+  assert.deepEqual(centerLoginAction({ enabled: false, signedIn: false, errorCode: '' }), { kind: 'local', message: '' });
+  assert.equal(centerLoginAction({ enabled: true, signedIn: true, errorCode: 'OAUTH_DENIED' }).kind, 'local');
+  assert.equal(centerLoginAction({ enabled: true, signedIn: false, errorCode: '' }).kind, 'redirect');
+  const failed = centerLoginAction({ enabled: true, signedIn: false, errorCode: 'ACCOUNT_NOT_LINKED' });
+  assert.equal(failed.kind, 'error');
+  assert.match(failed.message, /不能自行注册|这里不能自行注册|不开放自助注册|还没有对应账号/);
+  assert.match(userCenterErrorMessage('SELF_REGISTER_DISABLED'), /不开放自助注册/);
+  assert.match(userCenterErrorMessage('IDENTITY_CONFLICT'), /不能并入/);
+  assert.equal(userCenterErrorMessage(''), '');
 });
 
 test('logoutAccount sends the login check header', async () => {
